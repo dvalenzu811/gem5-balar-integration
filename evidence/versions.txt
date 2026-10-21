@@ -1,0 +1,11 @@
+===== gem5 =====
+bsc/main
+8d96f31cfcbd6f0bc583dba1aea58fb18f9c559a
+
+===== GPGPU-Sim =====
+dev
+91880c53383d5a6a6742bfb1be2c5f34e39c7871
+
+===== SST Elements =====
+master
+d5ab3547a98bfee34cc9f57633f829ea6eddc9f5

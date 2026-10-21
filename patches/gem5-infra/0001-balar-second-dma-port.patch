@@ -1,0 +1,41 @@
+diff --git a/gem5/modules/system/isa_systems.py b/gem5/modules/system/isa_systems.py
+index 2ad5c40..a3752f8 100644
+--- a/gem5/modules/system/isa_systems.py
++++ b/gem5/modules/system/isa_systems.py
+@@ -42,6 +42,36 @@
+ 
+ from gem5.prebuilt.riscv_cnm.riscv_cnm_board import RISCVCNMBoard
+ from gem5.prebuilt.riscv_cnm.arm_cnm_board import ARMCNMBoard
++
++# ------------------------------------------------------------------
++# M3.7 BALAR GPU mem_fetch wiring
++#
++# The original RISCVCNMBoard exposes only:
++#     [self.balar.dma]
++#
++# For M3.7 we expose two independent RequestPorts:
++#     0 -> Balar DMA/control/H2D-D2H
++#     1 -> GPGPU-Sim mem_fetch timing traffic
++#
++# RISCVCNMCacheHierarchy passes this list to create_system(), which
++# automatically creates one CNM_RNI_DMA per port.
++# ------------------------------------------------------------------
++
++def _m37_balar_get_dma_ports(self):
++    if self.has_dma_ports():
++        return [
++            self.balar.dma,
++            self.balar.gpu_mem,
++        ]
++
++    raise Exception(
++        "Cannot execute `get_dma_ports()`: "
++        "Board does not have DMA ports."
++    )
++
++
++RISCVCNMBoard.get_dma_ports = _m37_balar_get_dma_ports
++
+ from gem5.isas import ISA
+ 
+ from modules.options import Options

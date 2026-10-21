@@ -1,0 +1,16 @@
+build/
+runs/
+checkpoints/
+m5out/
+*.o
+*.so
+*.a
+gem5.opt
+*.out
+*.err
+*.img
+*.qcow2
+*.core
+core.*
+__pycache__/
+*.pyc

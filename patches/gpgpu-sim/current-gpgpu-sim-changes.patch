@@ -1,0 +1,116 @@
+diff --git a/libcuda/cuda_runtime_api.cc b/libcuda/cuda_runtime_api.cc
+index 5317c86..838dcb8 100644
+--- a/libcuda/cuda_runtime_api.cc
++++ b/libcuda/cuda_runtime_api.cc
+@@ -3762,12 +3762,15 @@ void cuda_runtime_api::cuobjdumpInit_internal(
+     std::function<void()> ctx_extract_code_func) {
+   CUctx_st *context = GPGPUSim_Context(gpgpu_ctx);
+   ctx_extract_code_func();  // extract all the output of cuobjdump to
+-                            // _cuobjdump_*.*
++                            // _cuobjdump_.*
++
++#if (CUDART_VERSION < 6000)
+   const char *pre_load = getenv("CUOBJDUMP_SIM_FILE");
+   if (pre_load == NULL || strlen(pre_load) == 0) {
+     cuobjdumpSectionList = pruneSectionList(context);
+     cuobjdumpSectionList = mergeSections();
+   }
++#endif
+ }
+ 
+ void cuda_runtime_api::cuobjdumpInit(const char *fn) {
+diff --git a/src/accelwattch/cacti/cacti.mk b/src/accelwattch/cacti/cacti.mk
+index 41f9218..67109ab 100644
+--- a/src/accelwattch/cacti/cacti.mk
++++ b/src/accelwattch/cacti/cacti.mk
+@@ -18,15 +18,15 @@ ifeq ($(TAG),dbg)
+   OPT = -ggdb -g -O0 -DNTHREADS=1  -gstabs+
+ else
+   DBG = 
+-  OPT = -O3 -msse2 -mfpmath=sse -DNTHREADS=$(NTHREADS)
++  OPT = -O3 -DNTHREADS=$(NTHREADS)
+ endif
+ 
+ #CXXFLAGS = -Wall -Wno-unknown-pragmas -Winline $(DBG) $(OPT) 
+ CXXFLAGS = -Wno-unknown-pragmas $(DBG) $(OPT) 
+ 
+ ifeq ($(shell getconf LONG_BIT),64) 
+-	CXX = g++ -m64
+-	CC  = gcc -m64
++	CXX = g++
++	CC  = gcc
+ else 
+ 	CXX = g++ -m32
+ 	CC  = gcc -m32
+diff --git a/src/accelwattch/mcpat.mk b/src/accelwattch/mcpat.mk
+index ad2d6c2..de5f1e4 100644
+--- a/src/accelwattch/mcpat.mk
++++ b/src/accelwattch/mcpat.mk
+@@ -17,8 +17,8 @@ CC=
+ CXX=
+ 
+ ifeq ($(shell getconf LONG_BIT),64) 
+-	CXX = g++ -m64
+-	CC  = gcc -m64
++	CXX = g++
++	CC  = gcc
+ else 
+ 	CXX = g++ -m32
+ 	CC  = gcc -m32
+@@ -29,7 +29,7 @@ ifeq ($(TAG),dbg)
+   OPT = -ggdb -fPIC -g -O0 -DNTHREADS=1 -Icacti -lz
+ else
+   DBG = 
+-  OPT = -O3 -fPIC -msse2 -mfpmath=sse -DNTHREADS=$(NTHREADS) -Icacti -lz
++  OPT = -O3 -fPIC -DNTHREADS=$(NTHREADS) -Icacti -lz
+   #OPT = -O0 -DNTHREADS=$(NTHREADS)
+ endif
+ 
+diff --git a/src/accelwattch/mcpatXeonCore.mk b/src/accelwattch/mcpatXeonCore.mk
+index 20cf0dd..30fdc52 100644
+--- a/src/accelwattch/mcpatXeonCore.mk
++++ b/src/accelwattch/mcpatXeonCore.mk
+@@ -16,7 +16,7 @@ ifeq ($(TAG),dbg)
+   OPT = -ggdb -g -O0 -DNTHREADS=1 -Icacti
+ else
+   DBG = 
+-  OPT = -O3 -msse2 -mfpmath=sse -DNTHREADS=$(NTHREADS) -Icacti
++  OPT = -O3 -DNTHREADS=$(NTHREADS) -Icacti
+   #OPT = -O0 -DNTHREADS=$(NTHREADS)
+ endif
+ 
+diff --git a/src/gpgpu-sim/gpu-sim.cc b/src/gpgpu-sim/gpu-sim.cc
+index c0dddef..7a9cee0 100644
+--- a/src/gpgpu-sim/gpu-sim.cc
++++ b/src/gpgpu-sim/gpu-sim.cc
+@@ -1812,6 +1812,7 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
+   }
+ #endif
+ 
++  if (!m_config.is_SST_mode()) {
+   // performance counter that are not local to one shader
+   m_memory_stats->memlatstat_print(m_memory_config->m_n_mem,
+                                    m_memory_config->nbk);
+@@ -1865,6 +1866,8 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
+     }
+   }
+ 
++  } // Internal memory statistics are unavailable in SST mode.
++
+   if (m_config.gpgpu_cflog_interval != 0) {
+     spill_log_to_file(stdout, 1, gpu_sim_cycle);
+     insn_warp_occ_print(stdout);
+@@ -2737,7 +2740,13 @@ void sst_gpgpu_sim::SST_cycle() {
+   // cout<<"Average pipeline duty cycle: "<<*average_pipeline_duty_cycle<<endl;
+ 
+   if (g_single_step && ((gpu_sim_cycle + gpu_tot_sim_cycle) >= g_single_step)) {
++#if defined(__x86_64__) || defined(__i386__)
+     asm("int $03");
++#elif defined(__aarch64__)
++    asm("brk #0");
++#else
++    __builtin_trap();
++#endif
+   }
+   gpu_sim_cycle++;
+   if (g_interactive_debugger_enabled) gpgpu_debug();
