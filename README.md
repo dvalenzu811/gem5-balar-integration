@@ -251,6 +251,325 @@ gem5 memory system
 
 ---
 
+<!-- BEGIN GEM5BALAR DEPENDENCIES -->
+
+# External dependencies and build model
+
+`gem5-balar-integration` is an integration repository. It does not
+contain complete copies of gem5, GPGPU-Sim or gem5-infra.
+
+A user starting from scratch must obtain and build the required simulators
+before using Gem5Balar.
+
+## Required software
+
+### 1. gem5
+
+Repository:
+
+```text
+https://gitlab.bsc.es/gem5/gem5.git
+```
+
+Reference base commit:
+
+```text
+8d96f31cfcbd6f0bc583dba1aea58fb18f9c559a
+```
+
+Gem5Balar is compiled as part of gem5.
+
+The Gem5Balar sources provided by this repository are:
+
+```text
+src/gem5/dev/balar/
+├── Gem5Balar.py
+├── gem5_balar.hh
+├── gem5_balar.cc
+└── balar_gpu_api.hh
+```
+
+They must be integrated into:
+
+```text
+gem5/src/dev/balar/
+```
+
+The reference gem5 checkout contains additional integration changes on top
+of the base commit. Therefore, checking out the base commit alone is not
+sufficient to reproduce the reference setup.
+
+---
+
+### 2. GPGPU-Sim
+
+Repository:
+
+```text
+https://github.com/accel-sim/gpgpu-sim_distribution.git
+```
+
+Reference base commit:
+
+```text
+91880c53383d5a6a6742bfb1be2c5f34e39c7871
+```
+
+GPGPU-Sim provides the GPU execution model used by Gem5Balar.
+
+A clean checkout of this commit is not sufficient. The GPGPU-Sim
+integration patch provided by this repository must also be applied:
+
+```text
+patches/gpgpu-sim/current-gpgpu-sim-changes.patch
+```
+
+The current patch contains modifications to:
+
+- `libcuda/cuda_runtime_api.cc`
+- `src/accelwattch/cacti/cacti.mk`
+- `src/accelwattch/mcpat.mk`
+- `src/accelwattch/mcpatXeonCore.mk`
+- `src/gpgpu-sim/gpu-sim.cc`
+
+The central integration files are:
+
+```text
+libcuda/cuda_runtime_api.cc
+src/gpgpu-sim/gpu-sim.cc
+```
+
+Changes under `src/accelwattch/`, when present, are build/platform
+adaptations from the reference environment and are not part of the
+Gem5Balar GPU memory protocol itself.
+
+The GPGPU-Sim interface keeps historical SST-oriented names such as:
+
+```cpp
+is_SST_buffer_full(...)
+send_read_request_SST(...)
+send_write_request_SST(...)
+SST_receive_mem_reply(...)
+SST_gpu_core_cycle(...)
+```
+
+These names are retained for compatibility with the existing GPGPU-Sim
+integration API.
+
+SST itself is not required as the runtime simulator by Gem5Balar.
+
+Conceptually:
+
+```text
+Original:
+
+GPGPU-Sim
+    |
+    v
+SST callback ABI
+    |
+    v
+SST Balar
+    |
+    v
+SST memory system
+
+
+Gem5Balar integration:
+
+GPGPU-Sim
+    |
+    v
+same callback ABI
+    |
+    v
+Gem5Balar
+    |
+    v
+gem5 memory hierarchy
+```
+
+---
+
+### 3. gem5-infra
+
+gem5-infra is not required by the generic Gem5Balar component.
+
+It is used to reproduce the Full-System reference experiment developed
+for this project.
+
+Repository:
+
+```text
+https://gitlab.bsc.es/gem5/gem5-infra.git
+```
+
+Reference base commit:
+
+```text
+023929a9d5e8db9c611d7ebd51041de9d969b0a2
+```
+
+The reference setup uses gem5-infra to configure:
+
+```text
+RISC-V Full-System Linux
+        +
+RISC-V CNM board
+        +
+Ruby / CHI
+        +
+Gem5Balar
+```
+
+Our gem5-infra checkout contains additional integration changes, including
+the board-side connection of the Gem5Balar DMA and GPU-memory ports.
+
+These modifications belong to the reference platform and are not
+requirements of the generic Gem5Balar SimObject.
+
+---
+
+## What must be built?
+
+Starting from a clean environment:
+
+```text
+GPGPU-Sim upstream
+        |
+        | checkout reference commit
+        v
+apply GPGPU-Sim integration patch
+        |
+        v
+build GPGPU-Sim
+        |
+        v
+compatible GPGPU-Sim library
+        |
+        +--------------------------+
+                                   |
+gem5 upstream                      |
+        |                          |
+        | checkout base commit     |
+        v                          |
+add Gem5Balar sources              |
+        |                          |
+apply integration changes          |
+        |                          |
+        +--------------------------+
+        |
+        v
+build gem5
+        |
+        v
+Gem5Balar-enabled gem5.opt
+```
+
+A compatible guest runtime and CUDA application are then required for
+Full-System execution.
+
+---
+
+## Generic Gem5Balar integration
+
+To use Gem5Balar in another gem5 platform, the minimum software stack is:
+
+```text
+gem5
+GPGPU-Sim
+Gem5Balar sources
+GPGPU-Sim integration patch
+compatible CUDA/Balar guest runtime
+```
+
+The target gem5 platform must provide:
+
+```text
+Gem5Balar
+├── PIO
+├── control DMA
+├── gpu_mem RequestPort
+└── GPU clock/event driving
+```
+
+The target memory hierarchy does not need to be CHI.
+
+---
+
+## Reference experiment
+
+To reproduce the configuration used in this project, additionally use:
+
+```text
+gem5-infra
+RISC-V Full-System Linux
+RISC-V CNM board
+Ruby / CHI
+reference scripts and configuration
+```
+
+The current reference memory topology is:
+
+```text
+Gem5Balar.dma
+      |
+      v
+CNM_RNI_DMA #0
+      |
+      v
+RubySequencer #0
+      |
+      v
+CHI
+
+
+Gem5Balar.gpu_mem
+      |
+      v
+CNM_RNI_DMA #1
+      |
+      v
+RubySequencer #1
+      |
+      v
+CHI
+```
+
+---
+
+## Recommended source layout
+
+```text
+workspace/
+├── gem5/
+├── gpgpu-sim/
+├── gem5-infra/
+└── gem5-balar-integration/
+```
+
+The roles of these repositories are:
+
+```text
+gem5
+    CPU, system and memory hierarchy simulator
+
+gpgpu-sim
+    GPU execution simulator
+
+gem5-infra
+    Full-System reference infrastructure
+
+gem5-balar-integration
+    Gem5Balar sources, patches, scripts,
+    configuration and documentation
+```
+
+`gem5-balar-integration` is therefore the integration layer, not a
+complete distribution of the CPU and GPU simulators.
+
+<!-- END GEM5BALAR DEPENDENCIES -->
+
 # 4. Integrating Gem5Balar into another gem5 system
 
 A new gem5 integration needs to provide at least:
