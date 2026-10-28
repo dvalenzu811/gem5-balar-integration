@@ -14,3 +14,11 @@ gem5.opt
 core.*
 __pycache__/
 *.pyc
+
+# Local machine configuration
+configs/local.env
+.last_vecadd_run
+/build/
+
+.last_vecadd_job
+.last_gem5_build_job

@@ -1,0 +1,89 @@
+diff --git a/src/python/gem5/prebuilt/riscv_cnm/riscv_cnm_board.py b/src/python/gem5/prebuilt/riscv_cnm/riscv_cnm_board.py
+index 587eb3b8d7..89a532f840 100644
+--- a/src/python/gem5/prebuilt/riscv_cnm/riscv_cnm_board.py
++++ b/src/python/gem5/prebuilt/riscv_cnm/riscv_cnm_board.py
+@@ -60,6 +60,8 @@ from m5.params import (
+     AddrRange,
+     Port,
+ )
++
++from m5.objects import Gem5Balar
+ from m5.util.fdthelper import (
+     Fdt,
+     FdtNode,
+@@ -96,8 +98,10 @@ class RISCVCNMBoard(
+         mem_numa_ranges,
+         cache_hierarchy: AbstractCacheHierarchy,
+         is_fs: bool = False,
++        cuda_executable: str = "",
+     ) -> None:
+         self._fs = is_fs
++        self._cuda_executable = cuda_executable
+         self.mem_ranges = mem_ranges
+         self.mem_numa_ranges = mem_numa_ranges
+         super().__init__()
+@@ -134,6 +138,16 @@ class RISCVCNMBoard(
+             self.iobus.badaddr_responder = BadAddr()
+             self.iobus.default = self.iobus.badaddr_responder.pio
+ 
++            # Balar GPU adapter.
++            # CPU accesses it through MMIO; GPU memory traffic leaves through
++            # its DMA RequestPort and enters Ruby/CHI through a CNM_RNI_DMA.
++            self.balar = Gem5Balar(
++                pio_addr=0x10020000,
++                pio_size=0x1000,
++                pio_latency="10ns",
++                cuda_executable=self._cuda_executable,
++            )
++
+             # The virtio disk
+             self.disk = RiscvMmioVirtIO(
+                 vio=VirtIOBlock(),
+@@ -156,7 +170,12 @@ class RISCVCNMBoard(
+             # Note: This overrides the platform's code because the platform isn't
+             # general enough.
+             self._on_chip_devices = [self.platform.clint, self.platform.plic]
+-            self._off_chip_devices = [self.platform.uart, self.disk, self.rng]
++            self._off_chip_devices = [
++                self.platform.uart,
++                self.disk,
++                self.rng,
++                self.balar,
++            ]
+         else:
+             pass
+ 
+@@ -223,12 +242,15 @@ class RISCVCNMBoard(
+ 
+     @overrides(AbstractBoard)
+     def has_dma_ports(self) -> bool:
+-        return False
++        return self._fs
+ 
+     @overrides(AbstractBoard)
+     def get_dma_ports(self) -> List[Port]:
++        if self._fs:
++            return [self.balar.dma]
++
+         raise NotImplementedError(
+-            "RISCVBoard does not have DMA Ports. "
++            "RISCVCNMBoard does not expose DMA ports in SE mode. "
+             "Use `has_dma_ports()` to check this."
+         )
+ 
+diff --git a/src/python/gem5/prebuilt/riscv_cnm/riscv_cnm_cache.py b/src/python/gem5/prebuilt/riscv_cnm/riscv_cnm_cache.py
+index 328b2a005f..b2ceb4b41e 100644
+--- a/src/python/gem5/prebuilt/riscv_cnm/riscv_cnm_cache.py
++++ b/src/python/gem5/prebuilt/riscv_cnm/riscv_cnm_cache.py
+@@ -104,6 +104,11 @@ class RISCVCNMCacheHierarchy(AbstractRubyCacheHierarchy):
+             options=self._options,
+             board=board,
+             ruby_system=self.ruby_system,
++            dma_ports=(
++                board.get_dma_ports()
++                if board.has_dma_ports()
++                else []
++            ),
+             router_numa_ids=topology.router_numa_ids,
+             mem_numa_ids=topology.mem_numa_ids,
+             is_fs=board.is_fullsystem(),

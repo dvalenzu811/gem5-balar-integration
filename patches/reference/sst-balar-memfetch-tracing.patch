@@ -1,0 +1,324 @@
+diff --git a/src/sst/elements/balar/balarMMIO.cc b/src/sst/elements/balar/balarMMIO.cc
+index e9402cb..4c9c900 100644
+--- a/src/sst/elements/balar/balarMMIO.cc
++++ b/src/sst/elements/balar/balarMMIO.cc
+@@ -155,7 +155,7 @@ bool BalarMMIO::is_SST_buffer_full(unsigned core_id) {
+  * @param size   :  request size
+  * @param mem_req:  pointer to memory fetch object in GPGPUSim
+  */
+-void BalarMMIO::send_read_request_SST(unsigned core_id, uint64_t address, uint64_t size, void* mem_req) {
++/*void BalarMMIO::send_read_request_SST(unsigned core_id, uint64_t address, uint64_t size, void* mem_req) {
+     assert(numPendingCacheTransPerCore[core_id] < maxPendingCacheTrans);
+     StandardMem::Read* req = new Interfaces::StandardMem::Read(address, size);
+     req->vAddr = address;
+@@ -165,8 +165,62 @@ void BalarMMIO::send_read_request_SST(unsigned core_id, uint64_t address, uint64
+     gpu_to_cache_links[core_id]->send(req);
+ 
+     out.verbose(CALL_INFO, 1, 0, "Sent a read request with id (%ld) to addr %lx\n", req->getID(), req->vAddr);
+-}
++}*/
++
++void
++BalarMMIO::send_read_request_SST(
++    unsigned core_id,
++    uint64_t address,
++    uint64_t size,
++    void* mem_req)
++{
++    assert(numPendingCacheTransPerCore[core_id] < maxPendingCacheTrans);
++
++    StandardMem::Read* req =
++        new Interfaces::StandardMem::Read(address, size);
++
++    req->vAddr = address;
+ 
++    cache_req_params crp(
++        core_id,
++        mem_req,
++        req,
++        gpuClockCycle,
++        address,
++        size,
++        false
++    );
++
++    gpuCachePendingTransactions->insert(
++        std::pair<
++            StandardMem::Request::id_t,
++            cache_req_params
++        >(req->getID(), crp)
++    );
++
++    numPendingCacheTransPerCore[core_id]++;
++    ++gpuMemTraceIssued;
++
++    if (gpuMemTraceIssued <= 64 ||
++        (gpuMemTraceIssued % 10000ULL) == 0) {
++
++        out.output(
++            "[SST-BALAR-MEM] ISSUE #%llu "
++            "req=%llu cycle=%llu core=%u "
++            "op=READ addr=0x%llx size=%llu "
++            "outstanding=%u\n",
++            (unsigned long long)gpuMemTraceIssued,
++            (unsigned long long)req->getID(),
++            (unsigned long long)gpuClockCycle,
++            core_id,
++            (unsigned long long)address,
++            (unsigned long long)size,
++            numPendingCacheTransPerCore[core_id]
++        );
++    }
++
++    gpu_to_cache_links[core_id]->send(req);
++}
+ /**
+  * @brief Callback in sst-gpgpusim to send memory write request to balarMMIO/SST
+  *        and use the SST backend for timing simulation?
+@@ -177,7 +231,7 @@ void BalarMMIO::send_read_request_SST(unsigned core_id, uint64_t address, uint64
+  * @param size   :  request size
+  * @param mem_req:  pointer to memory fetch object in GPGPUSim
+  */
+-void BalarMMIO::send_write_request_SST(unsigned core_id, uint64_t address, uint64_t size, void* mem_req) {
++/*void BalarMMIO::send_write_request_SST(unsigned core_id, uint64_t address, uint64_t size, void* mem_req) {
+     assert(numPendingCacheTransPerCore[core_id] < maxPendingCacheTrans);
+     std::vector<uint8_t> mock_data(size);
+     StandardMem::Write* req = new Interfaces::StandardMem::Write(address, size, mock_data, false);
+@@ -186,6 +240,68 @@ void BalarMMIO::send_write_request_SST(unsigned core_id, uint64_t address, uint6
+     numPendingCacheTransPerCore[core_id]++;
+     gpu_to_cache_links[core_id]->send(req);
+     out.verbose(CALL_INFO, 1, 0, "Sent a write request with id (%ld) to addr: %lx\n", req->getID(), req->vAddr);
++}*/
++
++void
++BalarMMIO::send_write_request_SST(
++    unsigned core_id,
++    uint64_t address,
++    uint64_t size,
++    void* mem_req)
++{
++    assert(numPendingCacheTransPerCore[core_id] < maxPendingCacheTrans);
++
++    std::vector<uint8_t> mock_data(size);
++
++    StandardMem::Write* req =
++        new Interfaces::StandardMem::Write(
++            address,
++            size,
++            mock_data,
++            false
++        );
++
++    req->vAddr = address;
++
++    cache_req_params crp(
++        core_id,
++        mem_req,
++        req,
++        gpuClockCycle,
++        address,
++        size,
++        true
++    );
++
++    gpuCachePendingTransactions->insert(
++        std::pair<
++            StandardMem::Request::id_t,
++            cache_req_params
++        >(req->getID(), crp)
++    );
++
++    numPendingCacheTransPerCore[core_id]++;
++    ++gpuMemTraceIssued;
++
++    if (gpuMemTraceIssued <= 64 ||
++        (gpuMemTraceIssued % 10000ULL) == 0) {
++
++        out.output(
++            "[SST-BALAR-MEM] ISSUE #%llu "
++            "req=%llu cycle=%llu core=%u "
++            "op=WRITE addr=0x%llx size=%llu "
++            "outstanding=%u\n",
++            (unsigned long long)gpuMemTraceIssued,
++            (unsigned long long)req->getID(),
++            (unsigned long long)gpuClockCycle,
++            core_id,
++            (unsigned long long)address,
++            (unsigned long long)size,
++            numPendingCacheTransPerCore[core_id]
++        );
++    }
++
++    gpu_to_cache_links[core_id]->send(req);
+ }
+ 
+ /**
+@@ -562,6 +678,13 @@ void BalarMMIO::SST_callback_event_done(const char* event_name, cudaStream_t str
+ }
+ 
+ bool BalarMMIO::clockTic(Cycle_t cycle) {
++    /*
++     * Record the SST/Balar GPU clock cycle before advancing
++     * GPGPU-Sim. Any mem_fetch generated during this call is
++     * therefore associated with this GPU cycle.
++     */
++    gpuClockCycle = static_cast<uint64_t>(cycle);
++
+     bool done = SST_gpu_core_cycle();
+     return done;
+ }
+@@ -578,7 +701,7 @@ void BalarMMIO::handleEvent(StandardMem::Request* req) {
+  *
+  * @param req
+  */
+-void BalarMMIO::handleGPUCache(SST::Interfaces::StandardMem::Request* req) {
++/*void BalarMMIO::handleGPUCache(SST::Interfaces::StandardMem::Request* req) {
+     // Handle cache request/response?
+     SST::Interfaces::StandardMem::Request::id_t req_id = req->getID();
+     auto find_entry = gpuCachePendingTransactions->find(req_id);
+@@ -593,8 +716,91 @@ void BalarMMIO::handleGPUCache(SST::Interfaces::StandardMem::Request* req) {
+     } else {
+         out.fatal(CALL_INFO, -1, "GPU Cache Request (%ld) not found!\n", req_id);
+     }
+-}
++}*/
++
++void
++BalarMMIO::handleGPUCache(
++    SST::Interfaces::StandardMem::Request* req)
++{
++    SST::Interfaces::StandardMem::Request::id_t req_id =
++        req->getID();
++
++    auto find_entry =
++        gpuCachePendingTransactions->find(req_id);
++
++    if (find_entry != gpuCachePendingTransactions->end()) {
++
++        cache_req_params req_params =
++            find_entry->second;
++
++        gpuCachePendingTransactions->erase(find_entry);
++
++        assert(
++            numPendingCacheTransPerCore[
++                req_params.core_id
++            ] > 0
++        );
++
++        numPendingCacheTransPerCore[
++            req_params.core_id
++        ]--;
++
++        const uint64_t complete_cycle =
++            gpuClockCycle;
++
++        assert(
++            complete_cycle >= req_params.issue_cycle
++        );
++
++        const uint64_t elapsed_cycles =
++            complete_cycle - req_params.issue_cycle;
++
++        ++gpuMemTraceCompleted;
++
++        if (gpuMemTraceCompleted <= 64 ||
++            (gpuMemTraceCompleted % 10000ULL) == 0) {
++
++            out.output(
++                "[SST-BALAR-MEM] COMPLETE #%llu "
++                "req=%llu "
++                "issue_cycle=%llu "
++                "complete_cycle=%llu "
++                "elapsed_gpu_cycles=%llu "
++                "core=%u op=%s "
++                "addr=0x%llx size=%llu "
++                "outstanding=%u\n",
++                (unsigned long long)gpuMemTraceCompleted,
++                (unsigned long long)req_id,
++                (unsigned long long)req_params.issue_cycle,
++                (unsigned long long)complete_cycle,
++                (unsigned long long)elapsed_cycles,
++                req_params.core_id,
++                req_params.is_write ? "WRITE" : "READ",
++                (unsigned long long)req_params.address,
++                (unsigned long long)req_params.size,
++                numPendingCacheTransPerCore[
++                    req_params.core_id
++                ]
++            );
++        }
++
++        SST_receive_mem_reply(
++            req_params.core_id,
++            req_params.mem_fetch_pointer
++        );
++
++        delete req;
++
++    } else {
+ 
++        out.fatal(
++            CALL_INFO,
++            -1,
++            "GPU Cache Request (%ld) not found!\n",
++            req_id
++        );
++    }
++}
+ /**
+  * @brief Handler for incoming Write requests via `mmio_iface`
+  *        the payload will be an address to the actual cuda call packet
+diff --git a/src/sst/elements/balar/balarMMIO.h b/src/sst/elements/balar/balarMMIO.h
+index c029fb3..d50d019 100644
+--- a/src/sst/elements/balar/balarMMIO.h
++++ b/src/sst/elements/balar/balarMMIO.h
+@@ -186,17 +186,33 @@ private:
+     // Mapping from Vanadis's texture pointer to the pointer of copy in simulator memspace
+     std::map<uint64_t, struct textureReference *> cudaTextureMapping;
+ 
+-
+     struct cache_req_params {
+-        cache_req_params( unsigned m_core_id,  void* mem_fetch, StandardMem::Request* req) {
+-                core_id = m_core_id;
+-                mem_fetch_pointer = mem_fetch;
+-                original_sst_req = req;
++        cache_req_params(
++            unsigned m_core_id,
++            void* mem_fetch,
++            StandardMem::Request* req,
++            uint64_t m_issue_cycle,
++            uint64_t m_address,
++            uint64_t m_size,
++            bool m_is_write)
++        {
++            core_id = m_core_id;
++            mem_fetch_pointer = mem_fetch;
++            original_sst_req = req;
++            issue_cycle = m_issue_cycle;
++            address = m_address;
++            size = m_size;
++            is_write = m_is_write;
+         }
+ 
+         void* mem_fetch_pointer;
+         unsigned core_id;
+         StandardMem::Request* original_sst_req;
++
++        uint64_t issue_cycle;
++        uint64_t address;
++        uint64_t size;
++        bool is_write;
+     };
+ 
+     virtual bool clockTic( SST::Cycle_t );
+@@ -218,6 +234,9 @@ private:
+     uint32_t maxPendingCacheTrans;
+     std::unordered_map<StandardMem::Request::id_t, struct cache_req_params>* gpuCachePendingTransactions;
+     uint32_t* numPendingCacheTransPerCore;
++    uint64_t gpuClockCycle = 0;
++    uint64_t gpuMemTraceIssued = 0;
++    uint64_t gpuMemTraceCompleted = 0;
+     bool isLaunchBlocking;
+ 
+     Output* output;

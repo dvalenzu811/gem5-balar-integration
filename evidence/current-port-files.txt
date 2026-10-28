@@ -1,0 +1,42 @@
+# Files that form the current gem5-Balar port
+
+[gem5 - new Gem5Balar implementation]
+src/dev/balar/Gem5Balar.py
+src/dev/balar/gem5_balar.cc
+src/dev/balar/gem5_balar.hh
+src/dev/balar/balar_gpu_api.hh
+src/dev/balar/SConscript
+
+[gem5 - board integration]
+src/python/gem5/prebuilt/riscv_cnm/riscv_cnm_board.py
+src/python/gem5/prebuilt/riscv_cnm/riscv_cnm_cache.py
+
+[gpgpu-sim - functional integration]
+libcuda/cuda_runtime_api.cc
+src/gpgpu-sim/gpu-sim.cc
+
+[gpgpu-sim - build portability]
+src/accelwattch/cacti/cacti.mk
+src/accelwattch/mcpat.mk
+src/accelwattch/mcpatXeonCore.mk
+
+[gem5-infra - benchmark workflow]
+exploration/benchmarks/vecadd.py
+exploration/exploration.py
+exploration/modules/benchmark/benchmark.py
+exploration/modules/options/options.py
+exploration/modules/template/template.py
+exploration/templates/srun_fs.sh
+exploration/templates/work.sh
+gem5/modules/options/options.py
+gem5/modules/system/isa_systems.py
+
+[sst-elements - Linux guest runtime]
+src/sst/elements/balar/tests/libcudart/balar_linux.h
+src/sst/elements/balar/tests/libcudart/cuda_runtime_api_linux.cc
+src/sst/elements/balar/tests/libcudart/Makefile
+src/sst/elements/balar/tests/vanadis_llvm_rv64/vecadd.cu
+
+[reference only - not required by Gem5Balar]
+src/sst/elements/balar/balarMMIO.cc
+src/sst/elements/balar/balarMMIO.h

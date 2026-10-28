@@ -97,6 +97,10 @@ void SST_callback_memcpy_D2H_done(
     cudaStream_t stream
 );
 
+void SST_callback_kernel_done(
+    cudaStream_t stream
+);
+
 std::tuple<cudaError_t, size_t, unsigned>
 SST_cudaGetParamConfig(
     uint64_t hostFun,

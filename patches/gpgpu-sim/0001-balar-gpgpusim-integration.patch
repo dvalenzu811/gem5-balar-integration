@@ -1,0 +1,174 @@
+diff --git a/libcuda/cuda_runtime_api.cc b/libcuda/cuda_runtime_api.cc
+index 5317c86..838dcb8 100644
+--- a/libcuda/cuda_runtime_api.cc
++++ b/libcuda/cuda_runtime_api.cc
+@@ -3762,12 +3762,15 @@ void cuda_runtime_api::cuobjdumpInit_internal(
+     std::function<void()> ctx_extract_code_func) {
+   CUctx_st *context = GPGPUSim_Context(gpgpu_ctx);
+   ctx_extract_code_func();  // extract all the output of cuobjdump to
+-                            // _cuobjdump_*.*
++                            // _cuobjdump_.*
++
++#if (CUDART_VERSION < 6000)
+   const char *pre_load = getenv("CUOBJDUMP_SIM_FILE");
+   if (pre_load == NULL || strlen(pre_load) == 0) {
+     cuobjdumpSectionList = pruneSectionList(context);
+     cuobjdumpSectionList = mergeSections();
+   }
++#endif
+ }
+ 
+ void cuda_runtime_api::cuobjdumpInit(const char *fn) {
+diff --git a/src/gpgpu-sim/gpu-sim.cc b/src/gpgpu-sim/gpu-sim.cc
+index c0dddef..f477a76 100644
+--- a/src/gpgpu-sim/gpu-sim.cc
++++ b/src/gpgpu-sim/gpu-sim.cc
+@@ -35,6 +35,7 @@
+ #include <execinfo.h>
+ #include <math.h>
+ #include <signal.h>
++#include <ucontext.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <unistd.h>
+@@ -1023,25 +1024,102 @@ void sst_gpgpu_sim::createSIMTCluster() {
+   SST_gpgpu_reply_buffer.resize(m_shader_config->n_simt_clusters);
+ }
+ 
+-// Crash handler for debugging - prints backtrace on SIGSEGV/SIGABRT
+-static void crash_handler(int sig) {
+-  void *array[50];
+-  int size = backtrace(array, 50);
++// Crash handler for debugging - prints the original fault context.
++static void crash_handler(int sig, siginfo_t *info, void *ucontext_raw) {
+   const char *sig_name = (sig == SIGSEGV)   ? "SIGSEGV"
+                          : (sig == SIGABRT) ? "SIGABRT"
+                                             : "UNKNOWN";
++
+   fprintf(stderr, "\n=== CRASH: %s (signal %d) ===\n", sig_name, sig);
+-  fprintf(stderr, "Backtrace:\n");
++
++#if defined(__aarch64__)
++  ucontext_t *uc = reinterpret_cast<ucontext_t *>(ucontext_raw);
++
++  unsigned long pc = 0;
++  unsigned long sp = 0;
++
++  if (uc != nullptr) {
++    pc = uc->uc_mcontext.pc;
++    sp = uc->uc_mcontext.sp;
++  }
++
++  unsigned long lr = 0;
++
++  if (uc != nullptr) {
++    lr = uc->uc_mcontext.regs[30];
++  }
++
++  fprintf(stderr,
++          "[CRASH-CONTEXT] si_code=%d si_addr=%p "
++          "pc=%#lx sp=%#lx lr=%#lx\n",
++          info != nullptr ? info->si_code : 0,
++          info != nullptr ? info->si_addr : nullptr,
++          pc,
++          sp,
++          lr);
++
++  if (pc != 0) {
++    void *fault_pc = reinterpret_cast<void *>(pc);
++    fprintf(stderr, "[CRASH-CONTEXT] fault PC mapping:\n");
++    backtrace_symbols_fd(&fault_pc, 1, STDERR_FILENO);
++  }
++
++  if (lr != 0) {
++    void *return_pc =
++        reinterpret_cast<void *>(lr);
++
++    void *call_site =
++        reinterpret_cast<void *>(lr - 4);
++
++    fprintf(stderr, "[CRASH-CONTEXT] LR mapping:\n");
++    backtrace_symbols_fd(&return_pc, 1, STDERR_FILENO);
++
++    fprintf(stderr, "[CRASH-CONTEXT] caller instruction (LR-4):\n");
++    backtrace_symbols_fd(&call_site, 1, STDERR_FILENO);
++  }
++
++  if (uc != nullptr) {
++    fprintf(stderr,
++            "[CRASH-REGS] "
++            "x0=%#lx x1=%#lx x2=%#lx x3=%#lx "
++            "x4=%#lx x5=%#lx x6=%#lx x7=%#lx\n",
++            uc->uc_mcontext.regs[0],
++            uc->uc_mcontext.regs[1],
++            uc->uc_mcontext.regs[2],
++            uc->uc_mcontext.regs[3],
++            uc->uc_mcontext.regs[4],
++            uc->uc_mcontext.regs[5],
++            uc->uc_mcontext.regs[6],
++            uc->uc_mcontext.regs[7]);
++  }
++#else
++  fprintf(stderr,
++          "[CRASH-CONTEXT] non-AArch64 build; si_addr=%p\n",
++          info != nullptr ? info->si_addr : nullptr);
++#endif
++
++  void *array[50];
++  int size = backtrace(array, 50);
++
++  fprintf(stderr, "Handler backtrace:\n");
+   backtrace_symbols_fd(array, size, STDERR_FILENO);
+   fprintf(stderr, "=== END BACKTRACE ===\n");
++
+   _exit(1);
+ }
+ 
+ static void install_crash_handlers() {
+   static bool installed = false;
++
+   if (!installed) {
+-    signal(SIGSEGV, crash_handler);
+-    signal(SIGABRT, crash_handler);
++    struct sigaction sa = {};
++    sa.sa_sigaction = crash_handler;
++    sigemptyset(&sa.sa_mask);
++    sa.sa_flags = SA_SIGINFO | SA_RESETHAND;
++
++    sigaction(SIGSEGV, &sa, nullptr);
++    sigaction(SIGABRT, &sa, nullptr);
++
+     installed = true;
+   }
+ }
+@@ -1812,6 +1890,7 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
+   }
+ #endif
+ 
++  if (!m_config.is_SST_mode()) {
+   // performance counter that are not local to one shader
+   m_memory_stats->memlatstat_print(m_memory_config->m_n_mem,
+                                    m_memory_config->nbk);
+@@ -1865,6 +1944,8 @@ void gpgpu_sim::gpu_print_stat(unsigned long long streamID) {
+     }
+   }
+ 
++  } // Internal memory statistics are unavailable in SST mode.
++
+   if (m_config.gpgpu_cflog_interval != 0) {
+     spill_log_to_file(stdout, 1, gpu_sim_cycle);
+     insn_warp_occ_print(stdout);
+@@ -2737,7 +2818,13 @@ void sst_gpgpu_sim::SST_cycle() {
+   // cout<<"Average pipeline duty cycle: "<<*average_pipeline_duty_cycle<<endl;
+ 
+   if (g_single_step && ((gpu_sim_cycle + gpu_tot_sim_cycle) >= g_single_step)) {
++#if defined(__x86_64__) || defined(__i386__)
+     asm("int $03");
++#elif defined(__aarch64__)
++    asm("brk #0");
++#else
++    __builtin_trap();
++#endif
+   }
+   gpu_sim_cycle++;
+   if (g_interactive_debugger_enabled) gpgpu_debug();

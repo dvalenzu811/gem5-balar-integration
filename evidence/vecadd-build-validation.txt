@@ -1,0 +1,75 @@
+# Reproducible vecadd build validation
+# Validated: 2026-10-28
+
+[host-visible CUDA ELF]
+
+output = build/vecadd/host/vecadd-ubuntu
+sha256 = 37a1317b7294c5617e51123ae428bca3b3710a1fb74261fbbcc11541971db472
+
+purpose:
+  Host-visible ELF passed to gem5/GPGPU-Sim through --cuda-executable.
+  Used for CUDA version detection and fatbin/PTX extraction.
+
+properties:
+  ELF64 RISC-V
+  statically linked
+  double-float ABI
+  contains libcudart_vanadis.a.11
+  contains .nv_fatbin
+  contains .nvFatBinSegment
+  does not contain /dev/mem
+  does not contain /proc/self/pagemap
+
+embedded PTX:
+  PTX file = vecadd-ubuntu.1.sm_70.ptx
+  PTX version = 7.5
+  target = sm_70
+  kernel = _Z6vecAddPdS_S_i
+
+historical validated sha256:
+  37a1317b7294c5617e51123ae428bca3b3710a1fb74261fbbcc11541971db472
+
+result:
+  EXACT BYTE-FOR-BYTE MATCH
+
+
+[Linux guest CUDA ELF]
+
+output = build/vecadd/guest/vecadd-ubuntu
+sha256 = 7f9111731bdb4bfc1532c3fde4fac109cf39bf112354b52f97c8a924aa86d12f
+
+purpose:
+  Executable run by the simulated RISC-V Linux guest.
+
+properties:
+  ELF64 RISC-V
+  statically linked
+  double-float ABI
+  contains libcudart_vanadis.a.11
+  contains /dev/mem
+  contains /proc/self/pagemap
+  contains Balar Linux runtime diagnostics
+
+historical validated file:
+  vecadd-ubuntu.linux_runtime_host_copy
+
+historical validated sha256:
+  7f9111731bdb4bfc1532c3fde4fac109cf39bf112354b52f97c8a924aa86d12f
+
+result:
+  EXACT BYTE-FOR-BYTE MATCH
+
+
+[important distinction]
+
+The two ELF files have different roles.
+
+host:
+  build/vecadd/host/vecadd-ubuntu
+  -> --cuda-executable
+  -> GPGPU-Sim PTX/fatbin inspection
+
+guest:
+  build/vecadd/guest/vecadd-ubuntu
+  -> benchmark disk /bin/vecadd-ubuntu
+  -> visible inside the guest as /data/bin/vecadd-ubuntu

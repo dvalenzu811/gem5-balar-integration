@@ -1,0 +1,309 @@
+diff --git a/exploration/exploration.py b/exploration/exploration.py
+index feba154..32f4878 100755
+--- a/exploration/exploration.py
++++ b/exploration/exploration.py
+@@ -39,6 +39,20 @@ def generate_workload(benchmark: Benchmark, options: Options):
+         else:
+             raise ValueError('Select RISCV or ARM arch')
+ 
++        cuda_executable = benchmark.get_cuda_executable(p, conf_dict)
++        if cuda_executable:
++            template.gem5_args += ' --cuda-executable {}'.format(
++                cuda_executable
++            )
++
++        host_workdir = benchmark.get_host_workdir(p, conf_dict)
++        if host_workdir:
++            template.host_workdir = host_workdir
++
++        host_setup = benchmark.get_host_setup(p, conf_dict)
++        if host_setup:
++            template.host_setup = host_setup
++
+         # Set secondary benchdisk if present
+         if benchmark.options.fs_mode and options.benchdisk:
+             template.benchdisk = "--disk {}".format(options.benchdisk)
+@@ -154,9 +168,16 @@ def generate_workload(benchmark: Benchmark, options: Options):
+ 
+         # Restore from checkpoint
+         if options.restore_checkpoint:
+-            cpt_dir = os.path.join(
+-                options.checkpoint_dir, "cpts", options.arch, benchmark.get_checkpoint_name(p)
+-            )
++            if options.checkpoint_directory:
++                cpt_dir = options.checkpoint_directory
++            else:
++                cpt_dir = os.path.join(
++                    options.checkpoint_dir,
++                    "cpts",
++                    options.arch,
++                    benchmark.get_checkpoint_name(p),
++                )
++
+             template.checkpoint = (
+                 "--checkpoint-restore 1 --checkpoint-directory {}".format(cpt_dir)
+             )
+@@ -347,9 +368,16 @@ def checkpoint_tick(p, options, benchmark, arch, template):
+     if options.restore_checkpoint:
+         import re, sys
+ 
+-        checkpoint_read_dir = os.path.join(
+-            options.checkpoint_dir, "cpts", arch, benchmark.get_checkpoint_name(p)
+-        )
++        if options.checkpoint_directory:
++            checkpoint_read_dir = options.checkpoint_directory
++        else:
++            checkpoint_read_dir = os.path.join(
++                options.checkpoint_dir,
++                "cpts",
++                arch,
++                benchmark.get_checkpoint_name(p),
++            )
++
+         dirs = os.listdir(checkpoint_read_dir)
+         expr = re.compile(r"cpt\.([0-9]+)")
+         cpts = []
+diff --git a/exploration/modules/benchmark/benchmark.py b/exploration/modules/benchmark/benchmark.py
+index ec2a170..9484b22 100644
+--- a/exploration/modules/benchmark/benchmark.py
++++ b/exploration/modules/benchmark/benchmark.py
+@@ -110,6 +110,18 @@ class Benchmark:
+     def get_command(self, parameters: dict, conf_dict: dict):
+         return ''
+ 
++    def get_cuda_executable(self, parameters: dict, conf_dict: dict):
++        """Return host-visible CUDA ELF for Gem5Balar, or empty if unused."""
++        return ''
++
++    def get_host_workdir(self, parameters: dict, conf_dict: dict):
++        """Return host working directory for gem5, or empty for default."""
++        return ''
++
++    def get_host_setup(self, parameters: dict, conf_dict: dict):
++        """Return optional shell setup executed before launching gem5."""
++        return ''
++
+     def parse_roi(self, rdict: dict, conf_dict: dict):
+         rdict['benchmark']  = self.name
+         conf_val = conf_dict['parameters'].get('conf', conf_dict['parameters'].get('conf_name', ''))
+diff --git a/exploration/modules/options/options.py b/exploration/modules/options/options.py
+index f5e495c..9519e82 100644
+--- a/exploration/modules/options/options.py
++++ b/exploration/modules/options/options.py
+@@ -74,6 +74,12 @@ class Options:
+         parser.add_argument("--checkpoint-only",     action='store_true', default=False, help="Checkpoint Simulation")
+         parser.add_argument("--restore-complete",    action='store_true', default=False, help="Complete restore after ROI")
+         parser.add_argument("--restore-checkpoint",  action='store_true', default=False, help="Restore from checkpoint")
++        parser.add_argument(
++            "--checkpoint-directory",
++            type=str,
++            default=None,
++            help="Existing gem5 checkpoint directory to restore from",
++        )
+ 
+         parser.add_argument("--gem5-bin",     type=str, default=None, help="gem5 binary")
+         parser.add_argument("--gem5-script",  type=str, default=None, help="gem5 script")
+@@ -138,6 +144,7 @@ class Options:
+         self.checkpoint_only = options.checkpoint_only
+         self.restore_complete = options.restore_complete
+         self.restore_checkpoint = options.restore_checkpoint or options.restore_complete
++        self.checkpoint_directory = options.checkpoint_directory
+ 
+         self.gem5_debug_flags = options.gem5_debug_flags
+         self.gem5_debug_file = options.gem5_debug_file
+diff --git a/exploration/modules/template/template.py b/exploration/modules/template/template.py
+index b23a60e..4b1b7a4 100644
+--- a/exploration/modules/template/template.py
++++ b/exploration/modules/template/template.py
+@@ -9,6 +9,14 @@ class Template:
+         self.modules     = '' #'module load GCC/10.3.0 Python zlib gperf protobuf'
+         self.gem5_bin    = benchmark.options.gem5_bin
+         self.gem5_script = benchmark.options.gem5_script
++        self.exploration_script = os.path.abspath(
++            os.path.join(
++                os.path.dirname(__file__),
++                "..",
++                "..",
++                "exploration.py",
++            )
++        )
+         self.gem5_args   = ''
+         if benchmark.fs_mode:
+             self.kernel      = benchmark.options.kernel
+@@ -28,6 +36,8 @@ class Template:
+         self.absolute_benchmark_name = benchmark.name
+         self.name = benchmark.get_name(parameters, conf_dict)
+         self.outd = os.path.join(benchmark.options.results_dir, self.name)
++        self.host_workdir = self.outd
++        self.host_setup = ""
+         self.conf = os.path.join(self.outd, '{}.yaml'.format(self.name))
+ 
+         self.benchmark_cmd = benchmark.get_command(parameters, conf_dict)
+diff --git a/exploration/templates/srun_fs.sh b/exploration/templates/srun_fs.sh
+index 8dff339..f79e184 100644
+--- a/exploration/templates/srun_fs.sh
++++ b/exploration/templates/srun_fs.sh
+@@ -117,7 +117,7 @@ KERNEL={kernel}
+ ROOTDISK={rootdisk}
+ ROOTPART={rootpart}
+ BOOT={bootloader}
+-WORK={bootscript}
++BOOTSCRIPT={bootscript}
+ NAME={name}
+ GEM5_BIN={gem5_bin}
+ GEM5_SCRIPT={gem5_script}
+@@ -150,11 +150,17 @@ if [ -f "$WDIR/stats.txt" ]; then
+ 	exit 1
+ fi
+ 
++{host_setup}
++
+ pushd $WDIR
+ 
+ status_print $NAME
+ 
+-SIM_STATS=$( (/usr/bin/time -f "%E %M" $GEM5_BIN {debug_opts} {debug_file} {debug_start} {debug_end}\
++set -o pipefail
++
++SIM_STATS=$( (
++cd {host_workdir} || exit 1
++/usr/bin/time -f "%E %M" $GEM5_BIN {debug_opts} {debug_file} {debug_start} {debug_end}\
+ 	--outdir=$WDIR $GEM5_SCRIPT \
+ 	--config-file  $CONF \
+ 	{checkpoint} {checkpoint_only}\
+@@ -164,11 +170,18 @@ SIM_STATS=$( (/usr/bin/time -f "%E %M" $GEM5_BIN {debug_opts} {debug_file} {debu
+         {benchdisk} \
+ 	--root-partition $ROOTPART \
+ 	--bootloader   $BOOT \
+-	--bootscript   $WDIR/$WORK \
++	--bootscript   $WDIR/$BOOTSCRIPT \
+ 	 {gem5_args} \
+ 	{rel_cycles} \
+ 	 2>&1 | tee -a $WDIR/output.log) | tail -n 1)
+ 
++SIM_RC=$?
++
++if [ "$SIM_RC" -ne 0 ]; then
++    echo "ERROR: gem5 failed with exit code $SIM_RC"
++    exit "$SIM_RC"
++fi
++
+ SIM_TIME=$(echo $SIM_STATS | cut -d' ' -f1)
+ SIM_MEM=$(echo $SIM_STATS | cut -d' ' -f2)
+ 
+@@ -193,7 +206,19 @@ fi
+ check_cpt_c_only=$(echo "$CHECKPOINT_ONLY" | grep -o 'checkpoint-only' | wc -l)
+ check_cpt_c=$(echo "$CPT" | grep -o 'checkpoint-mode' | wc -l)
+ if [[ "$check_cpt_c_only" -eq 0 && "$check_cpt_c" -eq 0 ]]; then
+-    $SRCDIR/gem5-infra/exploration/exploration.py --benchmark {absolute_benchmark_name} --parse-cur-dir
++    PARSER_PYTHON="${{GEM5INFRA_PARSER_PYTHON:-python3}}"
++
++    echo "===== GEM5-INFRA PARSER ====="
++    echo "PARSER_PYTHON=$PARSER_PYTHON"
++
++    env -u PYTHONPATH -u PYTHONHOME         "$PARSER_PYTHON"         {exploration_script}         --benchmark {absolute_benchmark_name}         --parse-cur-dir
++
++    PARSE_RC=$?
++
++    if [ "$PARSE_RC" -ne 0 ]; then
++        echo "ERROR: gem5-infra parser failed with exit code $PARSE_RC"
++        exit "$PARSE_RC"
++    fi
+ fi
+ 
+ popd
+diff --git a/exploration/templates/work.sh b/exploration/templates/work.sh
+index ffcf0fa..e10ad23 100644
+--- a/exploration/templates/work.sh
++++ b/exploration/templates/work.sh
+@@ -14,9 +14,13 @@ echo "Running {benchmark_cmd}"
+ /sbin/m5 resetstats
+ 
+ {benchmark_cmd}
++RC=$?
+ 
+ /sbin/m5 dumpstats
+ 
+-echo "Finished" 
++echo
++echo "Finished"
++echo "Benchmark RC=$RC"
+ 
+ /sbin/m5 exit
++exit "$RC"
+diff --git a/gem5/modules/options/options.py b/gem5/modules/options/options.py
+index cb54d78..bf05770 100644
+--- a/gem5/modules/options/options.py
++++ b/gem5/modules/options/options.py
+@@ -334,6 +334,7 @@ class Options:
+         self.disk = options.disk
+         self.bootloader = options.bootloader
+         self.bootscript = options.bootscript
++        self.cuda_executable = options.cuda_executable
+         self.root_partition = options.root_partition
+         self.riscv = options.riscv
+         self.arm = options.arm
+@@ -390,6 +391,12 @@ def add_options(parser):
+         "--root-partition", type=str, default="/dev/vda1", help="Root partition"
+     )
+     parser.add_argument("--bootscript", type=str, default=None, help="Linux bootscript")
++    parser.add_argument(
++        "--cuda-executable",
++        type=str,
++        default="",
++        help="Host-visible CUDA executable used by Gem5Balar/GPGPU-Sim",
++    )
+ 
+     parser.add_argument(
+         "--checkpoint-mode",
+diff --git a/gem5/modules/system/isa_systems.py b/gem5/modules/system/isa_systems.py
+index 2ad5c40..43e7c18 100644
+--- a/gem5/modules/system/isa_systems.py
++++ b/gem5/modules/system/isa_systems.py
+@@ -42,6 +42,36 @@
+ 
+ from gem5.prebuilt.riscv_cnm.riscv_cnm_board import RISCVCNMBoard
+ from gem5.prebuilt.riscv_cnm.arm_cnm_board import ARMCNMBoard
++
++# ------------------------------------------------------------------
++# M3.7 BALAR GPU mem_fetch wiring
++#
++# The original RISCVCNMBoard exposes only:
++#     [self.balar.dma]
++#
++# For M3.7 we expose two independent RequestPorts:
++#     0 -> Balar DMA/control/H2D-D2H
++#     1 -> GPGPU-Sim mem_fetch timing traffic
++#
++# RISCVCNMCacheHierarchy passes this list to create_system(), which
++# automatically creates one CNM_RNI_DMA per port.
++# ------------------------------------------------------------------
++
++def _m37_balar_get_dma_ports(self):
++    if self.has_dma_ports():
++        return [
++            self.balar.dma,
++            self.balar.gpu_mem,
++        ]
++
++    raise Exception(
++        "Cannot execute `get_dma_ports()`: "
++        "Board does not have DMA ports."
++    )
++
++
++RISCVCNMBoard.get_dma_ports = _m37_balar_get_dma_ports
++
+ from gem5.isas import ISA
+ 
+ from modules.options import Options
+@@ -62,7 +92,8 @@ class RiscvSystem(BaseSystem):
+             mem_ranges=components.mem_ranges,
+             mem_numa_ranges=components.mem_numa_ranges,
+             cache_hierarchy=components.cache_hierarchy,
+-            is_fs=options.simulation.fs_mode
++            is_fs=options.simulation.fs_mode,
++            cuda_executable=options.cuda_executable,
+         )
+ 
+ 

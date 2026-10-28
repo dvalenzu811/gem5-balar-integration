@@ -1,0 +1,13 @@
+diff --git a/src/sst/elements/balar/tests/libcudart/Makefile b/src/sst/elements/balar/tests/libcudart/Makefile
+index e5108cf..8dc5f78 100644
+--- a/src/sst/elements/balar/tests/libcudart/Makefile
++++ b/src/sst/elements/balar/tests/libcudart/Makefile
+@@ -38,7 +38,7 @@ ifeq ($(GPU_ARCH),)
+ endif
+ 
+ vanadis_cuda: $(CUSTOM_CUDA_LIB_SRC) test_vanadis_envs
+-	$(RISCV_PREFIX)gcc -c -static -I$(CUDA_INSTALL_PATH)/include -I. -DBALAR_CUDA_VERSION=\"libcudart_vanadis.a.$(shell echo $$CUDA_VERSION_NUMBER | cut -c 1-2)\" -fpic $<
++	$(RISCV_PREFIX)gcc -c -static -idirafter $(CUDA_INSTALL_PATH)/include -I. -DBALAR_CUDA_VERSION=\"libcudart_vanadis.a.$(shell echo $$CUDA_VERSION_NUMBER | cut -c 1-2)\" -fpic $<
+ 	$(RISCV_PREFIX)gcc -shared -o lib$(CUSTOM_CUDA_LIB).so $(CUSTOM_CUDA_LIB_SRC:.cc=.o)
+ 	$(RISCV_PREFIX)ar rcs lib$(CUSTOM_CUDA_LIB).a $(CUSTOM_CUDA_LIB_SRC:.cc=.o)
+ 

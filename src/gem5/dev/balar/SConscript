@@ -1,0 +1,19 @@
+Import('*')
+
+SimObject('Gem5Balar.py', sim_objects=['Gem5Balar'])
+Source('gem5_balar.cc')
+
+# Balar -> modified GPGPU-Sim CUDA runtime.
+import os
+
+_gpgpu_libdir = os.environ.get("GPGPUSIM_LIBDIR")
+
+if not _gpgpu_libdir:
+    raise RuntimeError(
+        "GPGPUSIM_LIBDIR must point to the modified GPGPU-Sim libcudart directory"
+    )
+
+env.AppendUnique(
+    LIBPATH=[_gpgpu_libdir],
+    LIBS=["cudart"],
+)

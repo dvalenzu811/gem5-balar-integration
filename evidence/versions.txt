@@ -1,11 +1,22 @@
-===== gem5 =====
-bsc/main
-8d96f31cfcbd6f0bc583dba1aea58fb18f9c559a
+# Base revisions used by gem5-balar-integration
+# Generated: 2026-10-28
 
-===== GPGPU-Sim =====
-dev
-91880c53383d5a6a6742bfb1be2c5f34e39c7871
+[gem5]
+branch = bsc/main
+commit = 8d96f31cfcbd6f0bc583dba1aea58fb18f9c559a
+remote = https://gitlab.bsc.es/gem5/gem5.git
 
-===== SST Elements =====
-master
-d5ab3547a98bfee34cc9f57633f829ea6eddc9f5
+[gpgpu-sim]
+branch = dev
+commit = 91880c53383d5a6a6742bfb1be2c5f34e39c7871
+remote = https://github.com/accel-sim/gpgpu-sim_distribution.git
+
+[sst-elements]
+branch = master
+commit = d5ab3547a98bfee34cc9f57633f829ea6eddc9f5
+remote = https://github.com/sstsimulator/sst-elements.git
+
+[gem5-infra]
+branch = bsc/main
+commit = 023929a9d5e8db9c611d7ebd51041de9d969b0a2
+remote = https://gitlab.bsc.es/gem5/gem5-infra.git

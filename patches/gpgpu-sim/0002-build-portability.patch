@@ -1,0 +1,60 @@
+diff --git a/src/accelwattch/cacti/cacti.mk b/src/accelwattch/cacti/cacti.mk
+index 41f9218..67109ab 100644
+--- a/src/accelwattch/cacti/cacti.mk
++++ b/src/accelwattch/cacti/cacti.mk
+@@ -18,15 +18,15 @@ ifeq ($(TAG),dbg)
+   OPT = -ggdb -g -O0 -DNTHREADS=1  -gstabs+
+ else
+   DBG = 
+-  OPT = -O3 -msse2 -mfpmath=sse -DNTHREADS=$(NTHREADS)
++  OPT = -O3 -DNTHREADS=$(NTHREADS)
+ endif
+ 
+ #CXXFLAGS = -Wall -Wno-unknown-pragmas -Winline $(DBG) $(OPT) 
+ CXXFLAGS = -Wno-unknown-pragmas $(DBG) $(OPT) 
+ 
+ ifeq ($(shell getconf LONG_BIT),64) 
+-	CXX = g++ -m64
+-	CC  = gcc -m64
++	CXX = g++
++	CC  = gcc
+ else 
+ 	CXX = g++ -m32
+ 	CC  = gcc -m32
+diff --git a/src/accelwattch/mcpat.mk b/src/accelwattch/mcpat.mk
+index ad2d6c2..de5f1e4 100644
+--- a/src/accelwattch/mcpat.mk
++++ b/src/accelwattch/mcpat.mk
+@@ -17,8 +17,8 @@ CC=
+ CXX=
+ 
+ ifeq ($(shell getconf LONG_BIT),64) 
+-	CXX = g++ -m64
+-	CC  = gcc -m64
++	CXX = g++
++	CC  = gcc
+ else 
+ 	CXX = g++ -m32
+ 	CC  = gcc -m32
+@@ -29,7 +29,7 @@ ifeq ($(TAG),dbg)
+   OPT = -ggdb -fPIC -g -O0 -DNTHREADS=1 -Icacti -lz
+ else
+   DBG = 
+-  OPT = -O3 -fPIC -msse2 -mfpmath=sse -DNTHREADS=$(NTHREADS) -Icacti -lz
++  OPT = -O3 -fPIC -DNTHREADS=$(NTHREADS) -Icacti -lz
+   #OPT = -O0 -DNTHREADS=$(NTHREADS)
+ endif
+ 
+diff --git a/src/accelwattch/mcpatXeonCore.mk b/src/accelwattch/mcpatXeonCore.mk
+index 20cf0dd..30fdc52 100644
+--- a/src/accelwattch/mcpatXeonCore.mk
++++ b/src/accelwattch/mcpatXeonCore.mk
+@@ -16,7 +16,7 @@ ifeq ($(TAG),dbg)
+   OPT = -ggdb -g -O0 -DNTHREADS=1 -Icacti
+ else
+   DBG = 
+-  OPT = -O3 -msse2 -mfpmath=sse -DNTHREADS=$(NTHREADS) -Icacti
++  OPT = -O3 -DNTHREADS=$(NTHREADS) -Icacti
+   #OPT = -O0 -DNTHREADS=$(NTHREADS)
+ endif
+ 

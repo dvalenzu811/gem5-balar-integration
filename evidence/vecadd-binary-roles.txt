@@ -1,0 +1,71 @@
+# vecadd binary roles
+# Audited: 2026-10-28
+
+[host-visible CUDA ELF]
+
+file = vanadis_llvm_rv64/vecadd-ubuntu
+sha256 = 37a1317b7294c5617e51123ae428bca3b3710a1fb74261fbbcc11541971db472
+
+Purpose:
+  Passed to gem5 as --cuda-executable.
+  Used by the modified GPGPU-Sim runtime to identify the CUDA
+  version and extract the fatbin/PTX.
+
+Observed fingerprints:
+  libcudart_vanadis.a.11
+
+Not observed:
+  /dev/mem
+  /proc/self/pagemap
+
+This file is byte-identical to:
+  vecadd-ubuntu.pre_linux_runtime
+
+
+[Linux guest runtime reference]
+
+file = vanadis_llvm_rv64/vecadd-ubuntu.linux_runtime_host_copy
+sha256 = 7f9111731bdb4bfc1532c3fde4fac109cf39bf112354b52f97c8a924aa86d12f
+
+Purpose:
+  Reference copy of the Linux/gem5 guest executable.
+
+Observed fingerprints:
+  /dev/mem
+  /proc/self/pagemap
+  BALAR pagemap messages
+  libcudart_vanadis.a.11
+
+This binary contains the Linux Balar runtime based on:
+  cuda_runtime_api_linux.cc
+
+
+[pre-version-fix Linux binary]
+
+file = vanadis_llvm_rv64/vecadd-ubuntu.pre_version_fix
+sha256 = 5221ddc2f5a948e7d2ad3ef5a16b855a58c21f18474752de60e7c93c44cda07d
+
+Observed fingerprints:
+  /dev/mem
+  /proc/self/pagemap
+  libcudart_bsc_gem5.a.11
+
+Interpretation:
+  Linux runtime build before restoring the libcudart_vanadis.a.11
+  version marker expected by GPGPU-Sim's CUDA-version detection.
+
+
+[execution model]
+
+Host:
+  --cuda-executable <CUDA_BINARY_DIR>/vecadd-ubuntu
+      -> GPGPU-Sim binary/PTX inspection
+
+Guest:
+  /data/bin/vecadd-ubuntu
+      -> Linux CUDA runtime
+      -> Balar MMIO
+      -> Gem5Balar
+
+The host-visible CUDA ELF and the executable inside BENCHDISK
+are separate artifacts and need not contain the same guest runtime.

@@ -74,6 +74,28 @@ SST_callback_memcpy_D2H_done(
     gBalarCallbackTarget->memcpyD2HDone(dst, src, count);
 }
 
+void
+SST_callback_kernel_done(cudaStream_t stream)
+{
+    fprintf(
+        stderr,
+        "[GEM5-BALAR-CB] KERNEL DONE stream=%p\n",
+        (void *)stream
+    );
+    fflush(stderr);
+
+    panic_if(
+        gBalarCallbackTarget == nullptr,
+        "BALAR kernel callback without Gem5Balar instance"
+    );
+
+    gBalarCallbackTarget->kernelDone(
+        static_cast<uint64_t>(
+            reinterpret_cast<uintptr_t>(stream)
+        )
+    );
+}
+
 /*
  * Strong replacements for the weak SST hooks provided by GPGPU-Sim.
  *
@@ -188,10 +210,11 @@ Gem5Balar::Gem5Balar(const Params &p)
      * these symbols must override.
      */
     inform(
-        "%s: [BALAR-MEMCPY] callbacks H2D=%p D2H=%p",
+        "%s: [BALAR-CB] callbacks H2D=%p D2H=%p KERNEL=%p",
         name(),
         reinterpret_cast<void *>(&SST_callback_memcpy_H2D_done),
-        reinterpret_cast<void *>(&SST_callback_memcpy_D2H_done)
+        reinterpret_cast<void *>(&SST_callback_memcpy_D2H_done),
+        reinterpret_cast<void *>(&SST_callback_kernel_done)
     );
 
     gpuCoreCount = p.gpu_cores;
@@ -416,6 +439,29 @@ Gem5Balar::gpuTick()
      * true for its terminal/break-limit condition.
      */
     if (done) {
+
+        uint64_t totalOutstanding = 0;
+
+        for (const auto outstanding :
+             gpuMemOutstandingPerCluster) {
+            totalOutstanding += outstanding;
+        }
+
+        inform(
+            "%s: [BALAR-GPU-MEM] SUMMARY "
+            "issued=%llu completed=%llu "
+            "blocked=%llu retries=%llu "
+            "outstanding=%llu queued=%llu waiting_retry=%u",
+            name(),
+            (unsigned long long)gpuMemFetchIssued,
+            (unsigned long long)gpuMemFetchCompleted,
+            (unsigned long long)gpuMemBlockedCount,
+            (unsigned long long)gpuMemRetryCount,
+            (unsigned long long)totalOutstanding,
+            (unsigned long long)gpuMemSendQueue.size(),
+            (unsigned)gpuMemWaitingForRetry
+        );
+
         gpuClockRunning = false;
 
         inform("%s: [BALAR-GPU-CLOCK] STOP cycle=%llu tick=%llu",
@@ -681,6 +727,8 @@ Gem5Balar::dispatchCudaCall()
                 )
             );
 
+        cudaLaunchStreamStack.push_back(p.stream);
+
         break;
       }
 
@@ -731,16 +779,32 @@ Gem5Balar::dispatchCudaCall()
             (unsigned long long)func
         );
 
+        panic_if(
+            cudaLaunchStreamStack.empty(),
+            "%s: CUDA_LAUNCH without preceding CUDA_CONFIG_CALL",
+            name()
+        );
+
+        const uint64_t stream =
+            cudaLaunchStreamStack.back();
+
         cudaReturnPacket.cudaError =
             static_cast<uint32_t>(
                 cudaLaunchSST(func)
             );
 
-        inform(
-            "%s: [BALAR-GPU] cudaLaunchSST error=%u",
-            name(),
-            cudaReturnPacket.cudaError
-        );
+        if (cudaReturnPacket.cudaError == 0) {
+            ++pendingKernelsPerStream[stream];
+
+            inform(
+                "%s: [BALAR-KERNEL] LAUNCH stream=%#llx pending=%u",
+                name(),
+                (unsigned long long)stream,
+                pendingKernelsPerStream[stream]
+            );
+        }
+
+        cudaLaunchStreamStack.pop_back();
 
         break;
       }
@@ -1028,6 +1092,32 @@ Gem5Balar::memcpyD2HDone(
     );
 }
 
+void
+Gem5Balar::kernelDone(uint64_t stream)
+{
+    auto it = pendingKernelsPerStream.find(stream);
+
+    panic_if(
+        it == pendingKernelsPerStream.end() ||
+        it->second == 0,
+        "%s: kernelDone for stream=%#llx with no pending kernel",
+        name(),
+        (unsigned long long)stream
+    );
+
+    --it->second;
+
+    inform(
+        "%s: [BALAR-KERNEL] DONE stream=%#llx pending=%u",
+        name(),
+        (unsigned long long)stream,
+        it->second
+    );
+
+    if (it->second == 0) {
+        pendingKernelsPerStream.erase(it);
+    }
+}
 
 void
 Gem5Balar::memcpyDataWriteDone()
@@ -1137,17 +1227,34 @@ Gem5Balar::gpuMemBufferFull(
 {
     panic_if(
         clusterId >= gpuMemOutstandingPerCluster.size(),
-        "%s: invalid GPU cluster id %u (clusters=%zu)",
+        "%s: invalid GPU cluster id %u (clusters=%llu)",
         name(),
         clusterId,
-        gpuMemOutstandingPerCluster.size()
+        (unsigned long long)gpuMemOutstandingPerCluster.size()
     );
 
+    uint64_t totalOutstanding = 0;
+
+    for (const auto outstanding : gpuMemOutstandingPerCluster) {
+        totalOutstanding += outstanding;
+    }
+
+    /*
+     * Original SST Balar:
+     *   one gpu_to_cache link per GPU cluster.
+     *
+     * Current M3.7 Gem5Balar:
+     *   all GPU clusters share one gpu_mem RequestPort / CNM_RNI_DMA.
+     *
+     * Preserve the original per-cluster limit, but also bound the
+     * aggregate pressure injected into the shared gem5 timing port.
+     */
     return
         gpuMemOutstandingPerCluster[clusterId]
-        >= maxPendingCacheTrans;
+            >= maxPendingCacheTrans ||
+        totalOutstanding
+            >= maxPendingCacheTrans;
 }
-
 
 void
 Gem5Balar::sendGpuMemRead(
@@ -1237,6 +1344,10 @@ Gem5Balar::enqueueGpuMemRequest(
 
     auto *transaction =
         new GpuMemTransaction;
+
+    transaction->id = ++gpuMemTransactionSeq;
+    transaction->issueTick = static_cast<uint64_t>(curTick());
+    transaction->issueGpuCycle = gpuTickCount;
 
     transaction->clusterId = clusterId;
     transaction->memFetch = memFetch;
@@ -1337,11 +1448,14 @@ Gem5Balar::enqueueGpuMemRequest(
 
         inform(
             "%s: [BALAR-GPU-MEM] FETCH ISSUE #%llu "
+            "tx=%llu tick=%llu gpu_cycle=%llu "
             "cluster=%u op=%s gpu_addr=%#llx mapped=%#llx "
-            "size=%llu parts=%u "
-            "outstanding=%u",
+            "size=%llu parts=%u outstanding=%u",
             name(),
             (unsigned long long)gpuMemFetchIssued,
+            (unsigned long long)transaction->id,
+            (unsigned long long)transaction->issueTick,
+            (unsigned long long)transaction->issueGpuCycle,
             clusterId,
             originalWrite ? "WRITE->TIMING_READ" : "READ",
             (unsigned long long)address,
@@ -1371,12 +1485,32 @@ Gem5Balar::trySendGpuMemRequests()
 
             gpuMemWaitingForRetry = true;
 
-            inform(
-                "%s: [BALAR-GPU-MEM] RequestPort blocked; "
-                "waiting for recvReqRetry() queue=%zu",
-                name(),
-                gpuMemSendQueue.size()
+            ++gpuMemBlockedCount;
+
+            auto *state =
+                static_cast<GpuMemSenderState *>(pkt->senderState);
+
+            panic_if(
+                state == nullptr ||
+                state->transaction == nullptr,
+                "%s: blocked gpu packet without transaction",
+                name()
             );
+
+            if (gpuMemBlockedCount <= 64 ||
+                (gpuMemBlockedCount % 10000ULL) == 0) {
+
+                inform(
+                    "%s: [BALAR-GPU-MEM] PORT BLOCKED #%llu "
+                    "tx=%llu tick=%llu gpu_cycle=%llu queue=%llu",
+                    name(),
+                    (unsigned long long)gpuMemBlockedCount,
+                    (unsigned long long)state->transaction->id,
+                    (unsigned long long)curTick(),
+                    (unsigned long long)gpuTickCount,
+                    (unsigned long long)gpuMemSendQueue.size()
+                );
+            }
 
             return;
         }
@@ -1399,11 +1533,21 @@ Gem5Balar::recvGpuMemReqRetry()
 
     gpuMemWaitingForRetry = false;
 
-    inform(
-        "%s: [BALAR-GPU-MEM] recvReqRetry queue=%zu",
-        name(),
-        gpuMemSendQueue.size()
-    );
+    ++gpuMemRetryCount;
+
+    if (gpuMemRetryCount <= 64 ||
+        (gpuMemRetryCount % 10000ULL) == 0) {
+
+        inform(
+            "%s: [BALAR-GPU-MEM] PORT RETRY #%llu "
+            "tick=%llu gpu_cycle=%llu queue=%llu",
+            name(),
+            (unsigned long long)gpuMemRetryCount,
+            (unsigned long long)curTick(),
+            (unsigned long long)gpuTickCount,
+            (unsigned long long)gpuMemSendQueue.size()
+        );
+    }
 
     trySendGpuMemRequests();
 }
@@ -1467,6 +1611,17 @@ Gem5Balar::recvGpuMemTimingResp(PacketPtr pkt)
             name(),
             clusterId
         );
+        const uint64_t completionTick =
+        static_cast<uint64_t>(curTick());
+
+        const uint64_t completionGpuCycle =
+            gpuTickCount;
+
+        const uint64_t latencyTicks =
+            completionTick - transaction->issueTick;
+
+        const uint64_t elapsedGpuCycles =
+            completionGpuCycle - transaction->issueGpuCycle;
 
         --gpuMemOutstandingPerCluster[clusterId];
 
@@ -1477,13 +1632,22 @@ Gem5Balar::recvGpuMemTimingResp(PacketPtr pkt)
 
             inform(
                 "%s: [BALAR-GPU-MEM] FETCH COMPLETE #%llu "
-                "cluster=%u op=%s addr=%#llx size=%llu "
-                "outstanding=%u",
+                "tx=%llu cluster=%u op=%s "
+                "issue_tick=%llu complete_tick=%llu latency_ticks=%llu "
+                "issue_cycle=%llu complete_cycle=%llu elapsed_gpu_cycles=%llu "
+                "addr=%#llx size=%llu outstanding=%u",
                 name(),
                 (unsigned long long)gpuMemFetchCompleted,
+                (unsigned long long)transaction->id,
                 clusterId,
                 transaction->originalWrite ?
                     "WRITE->TIMING_READ" : "READ",
+                (unsigned long long)transaction->issueTick,
+                (unsigned long long)completionTick,
+                (unsigned long long)latencyTicks,
+                (unsigned long long)transaction->issueGpuCycle,
+                (unsigned long long)completionGpuCycle,
+                (unsigned long long)elapsedGpuCycles,
                 (unsigned long long)transaction->address,
                 (unsigned long long)transaction->size,
                 gpuMemOutstandingPerCluster[clusterId]

@@ -7,6 +7,7 @@
 #include <vector>
 #include <deque>
 #include <memory>
+#include <map>
 
 #include "dev/dma_device.hh"
 #include "params/Gem5Balar.hh"
@@ -58,6 +59,14 @@ class Gem5Balar : public DmaDevice
     void memcpyH2DDone(uint64_t dst, uint64_t src, size_t count);
     void memcpyD2HDone(uint64_t dst, uint64_t src, size_t count);
 
+    std::vector<uint64_t> cudaLaunchStreamStack;
+    std::map<uint64_t, unsigned> pendingKernelsPerStream;
+
+    void kernelDone(uint64_t stream);
+
+    uint64_t gpuMemTransactionSeq = 0;
+    uint64_t gpuMemBlockedCount = 0;
+    uint64_t gpuMemRetryCount = 0;
   private:
 
     static constexpr size_t BalarRequestBytes = 576;
@@ -322,6 +331,10 @@ class Gem5Balar : public DmaDevice
          * boundaries. Reply to GPGPU-Sim only after every part returns.
          */
         unsigned remainingParts = 0;
+
+        uint64_t id = 0;
+        uint64_t issueTick = 0;
+        uint64_t issueGpuCycle = 0;
     };
 
 
