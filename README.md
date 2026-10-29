@@ -1,1208 +1,487 @@
 # gem5-Balar Integration
 
-`Gem5Balar` is a gem5 device that bridges CUDA/GPGPU-Sim activity into a gem5 full-system simulation.
+Portable integration of **BALAR + gem5 + GPGPU-Sim** used as the functional baseline for the gem5-Balar project.
 
-The project was developed to replace the original SST-side Balar integration with a gem5-native component while keeping the existing GPGPU-Sim/SST callback ABI whenever possible.
+The repository does not contain full copies of gem5, GPGPU-Sim, SST Elements or gem5-infra. Instead, it stores the source files, patches, scripts and configuration required to reproduce the integration on top of known external revisions.
 
-The repository serves two purposes:
 
-1. **Reusable Gem5Balar component** — integrate Balar and GPGPU-Sim into another gem5 system.
-2. **Reference integration** — reproduce the configuration used during development with gem5, a RISC-V CNM board, CHI, GPGPU-Sim and a CUDA `vecadd` application.
-
----
-
-# 1. Architecture
-
-At a high level:
+## Repository structure
 
 ```text
-                    Linux guest
-                        │
-                  CUDA application
-                        │
-                 CUDA runtime calls
-                        │
-                        ▼
-                 ┌─────────────┐
-                 │ Gem5Balar   │
-                 └─────────────┘
-                  │     │     │
-                  │     │     │
-                PIO    DMA  gpu_mem
-                  │     │     │
-                  │     │     ▼
-                  │     │   gem5 memory system
-                  │     │      │
-                  │     │      ▼
-                  │     │     CHI
-                  │     │
-                  │     ▼
-                  │ CPU memory
-                  │
-                  ▼
-            CPU control path
-
-                 Gem5Balar
-                      │
-                      ▼
-                GPGPU-Sim
-                      │
-                      ▼
-                  GPU model
+configs/        Local configuration templates
+evidence/       Validated versions and build information
+patches/        Patches for external repositories
+scripts/        Setup, build and execution scripts
+src/            Canonical source files maintained by this repository
 ```
 
-`Gem5Balar` therefore handles two different paths:
+Historical M3.7 files are kept under:
 
 ```text
-Control path
-============
-
-Guest CUDA call
-      │
-      ▼
-     MMIO
-      │
-      ▼
- Gem5Balar
-      │
-      ├── DMA request/return structures
-      │
-      ▼
- GPGPU-Sim
-
-
-GPU memory timing path
-======================
-
-GPGPU-Sim mem_fetch
-      │
-      ▼
-send_read_request_SST()
-send_write_request_SST()
-      │
-      ▼
- Gem5Balar
-      │
-      ▼
- gpu_mem RequestPort
-      │
-      ▼
- gem5 memory hierarchy
-      │
-      ▼
- timing response
-      │
-      ▼
- Gem5Balar
-      │
-      ▼
-SST_receive_mem_reply()
-      │
-      ▼
- GPGPU-Sim
+patches/legacy/m37/
+scripts/legacy/
 ```
 
----
-
-# 2. Gem5Balar as a reusable gem5 component
-
-The main component is located under:
+Reference or diagnostic patches that are not automatically installed are stored under:
 
 ```text
-src/gem5/dev/balar/
-├── Gem5Balar.py
-├── gem5_balar.hh
-├── gem5_balar.cc
-└── balar_gpu_api.hh
+patches/reference/
 ```
 
-`Gem5Balar` derives from gem5's `DmaDevice`.
+## External dependencies
 
-The component exposes three relevant interfaces.
+The integration expects external source trees for:
 
-## PIO
+- gem5
+- GPGPU-Sim / Accel-Sim
+- SST Elements
+- gem5-infra
 
-The PIO interface is used by the guest to submit CUDA/Balar commands.
-
-Example configuration:
+The revisions used by the validated baseline are documented in:
 
 ```text
-pio_addr = configured MMIO base
-pio_size = 0x1000
-pio_latency = 10 ns
+evidence/versions.txt
 ```
+## Requirements and validated versions
 
-The CPU-side software writes CUDA call information through this region and Gem5Balar dispatches the corresponding operation.
+This repository is **not a standalone installer**.
 
----
+The scripts in this repository do not download or install gem5, GPGPU-Sim, SST Elements, gem5-infra, compilers or system dependencies.
 
-## DMA
+They reproduce the BALAR integration on top of **already existing external source trees**.
 
-The standard `DmaDevice` DMA interface is used for CPU-side memory transfers associated with the Balar control protocol.
-
-Examples include:
-
-```text
-CUDA call packet retrieval
-ReturnPacket writes
-H2D/D2H control-side transfers
-```
-
-This path should remain independent from GPU `mem_fetch` timing traffic.
-
----
-
-## gpu_mem
-
-`gpu_mem` is a separate gem5 `RequestPort` introduced for GPU memory timing traffic.
-
-```text
-GPGPU-Sim
-    │
-    ▼
- mem_fetch
-    │
-    ▼
-Gem5Balar.gpu_mem
-    │
-    ▼
-gem5 memory hierarchy
-```
-
-The intention is to prevent GPU memory traffic from sharing the control DMA path.
-
-A gem5 system integrating Gem5Balar therefore needs to connect both:
-
-```text
-balar.dma
-balar.gpu_mem
-```
-
-to suitable memory-side requesters.
-
----
-
-# 3. GPGPU-Sim interface
-
-Gem5Balar reuses the callback interface originally used by the SST integration.
-
-This minimizes invasive changes inside GPGPU-Sim.
-
-Relevant hooks include:
-
-```cpp
-bool is_SST_buffer_full(unsigned cluster_id);
-
-void send_read_request_SST(
-    unsigned cluster_id,
-    uint64_t address,
-    size_t size,
-    void *mem_fetch);
-
-void send_write_request_SST(
-    unsigned cluster_id,
-    uint64_t address,
-    size_t size,
-    void *mem_fetch);
-```
-
-The response path uses:
-
-```cpp
-SST_receive_mem_reply(
-    cluster_id,
-    mem_fetch);
-```
-
-The names still contain `SST` for compatibility with the existing GPGPU-Sim integration API.
-
-In the current implementation these functions are provided by Gem5Balar rather than by SST.
-
-Conceptually:
-
-```text
-Original architecture
-
-GPGPU-Sim
-    │
-    ▼
-SST callback API
-    │
-    ▼
-SST Balar
-    │
-    ▼
-SST memory system
-
-
-Current architecture
-
-GPGPU-Sim
-    │
-    ▼
-same callback API
-    │
-    ▼
-Gem5Balar
-    │
-    ▼
-gem5 memory system
-```
-
----
-
-<!-- BEGIN GEM5BALAR DEPENDENCIES -->
-
-# External dependencies and build model
-
-`gem5-balar-integration` is an integration repository. It does not
-contain complete copies of gem5, GPGPU-Sim or gem5-infra.
-
-A user starting from scratch must obtain and build the required simulators
-before using Gem5Balar.
-
-## Required software
-
-### 1. gem5
-
-Repository:
-
-```text
-https://gitlab.bsc.es/gem5/gem5.git
-```
-
-Reference base commit:
-
-```text
-8d96f31cfcbd6f0bc583dba1aea58fb18f9c559a
-```
-
-Gem5Balar is compiled as part of gem5.
-
-The Gem5Balar sources provided by this repository are:
-
-```text
-src/gem5/dev/balar/
-├── Gem5Balar.py
-├── gem5_balar.hh
-├── gem5_balar.cc
-└── balar_gpu_api.hh
-```
-
-They must be integrated into:
-
-```text
-gem5/src/dev/balar/
-```
-
-The reference gem5 checkout contains additional integration changes on top
-of the base commit. Therefore, checking out the base commit alone is not
-sufficient to reproduce the reference setup.
-
----
-
-### 2. GPGPU-Sim
-
-Repository:
-
-```text
-https://github.com/accel-sim/gpgpu-sim_distribution.git
-```
-
-Reference base commit:
-
-```text
-91880c53383d5a6a6742bfb1be2c5f34e39c7871
-```
-
-GPGPU-Sim provides the GPU execution model used by Gem5Balar.
-
-A clean checkout of this commit is not sufficient. The GPGPU-Sim
-integration patch provided by this repository must also be applied:
-
-```text
-patches/gpgpu-sim/current-gpgpu-sim-changes.patch
-```
-
-The current patch contains modifications to:
-
-- `libcuda/cuda_runtime_api.cc`
-- `src/accelwattch/cacti/cacti.mk`
-- `src/accelwattch/mcpat.mk`
-- `src/accelwattch/mcpatXeonCore.mk`
-- `src/gpgpu-sim/gpu-sim.cc`
-
-The central integration files are:
-
-```text
-libcuda/cuda_runtime_api.cc
-src/gpgpu-sim/gpu-sim.cc
-```
-
-Changes under `src/accelwattch/`, when present, are build/platform
-adaptations from the reference environment and are not part of the
-Gem5Balar GPU memory protocol itself.
-
-The GPGPU-Sim interface keeps historical SST-oriented names such as:
-
-```cpp
-is_SST_buffer_full(...)
-send_read_request_SST(...)
-send_write_request_SST(...)
-SST_receive_mem_reply(...)
-SST_gpu_core_cycle(...)
-```
-
-These names are retained for compatibility with the existing GPGPU-Sim
-integration API.
-
-SST itself is not required as the runtime simulator by Gem5Balar.
-
-Conceptually:
-
-```text
-Original:
-
-GPGPU-Sim
-    |
-    v
-SST callback ABI
-    |
-    v
-SST Balar
-    |
-    v
-SST memory system
-
-
-Gem5Balar integration:
-
-GPGPU-Sim
-    |
-    v
-same callback ABI
-    |
-    v
-Gem5Balar
-    |
-    v
-gem5 memory hierarchy
-```
-
----
-
-### 3. gem5-infra
-
-gem5-infra is not required by the generic Gem5Balar component.
-
-It is used to reproduce the Full-System reference experiment developed
-for this project.
-
-Repository:
-
-```text
-https://gitlab.bsc.es/gem5/gem5-infra.git
-```
-
-Reference base commit:
-
-```text
-023929a9d5e8db9c611d7ebd51041de9d969b0a2
-```
-
-The reference setup uses gem5-infra to configure:
-
-```text
-RISC-V Full-System Linux
-        +
-RISC-V CNM board
-        +
-Ruby / CHI
-        +
-Gem5Balar
-```
-
-Our gem5-infra checkout contains additional integration changes, including
-the board-side connection of the Gem5Balar DMA and GPU-memory ports.
-
-These modifications belong to the reference platform and are not
-requirements of the generic Gem5Balar SimObject.
-
----
-
-## What must be built?
-
-Starting from a clean environment:
-
-```text
-GPGPU-Sim upstream
-        |
-        | checkout reference commit
-        v
-apply GPGPU-Sim integration patch
-        |
-        v
-build GPGPU-Sim
-        |
-        v
-compatible GPGPU-Sim library
-        |
-        +--------------------------+
-                                   |
-gem5 upstream                      |
-        |                          |
-        | checkout base commit     |
-        v                          |
-add Gem5Balar sources              |
-        |                          |
-apply integration changes          |
-        |                          |
-        +--------------------------+
-        |
-        v
-build gem5
-        |
-        v
-Gem5Balar-enabled gem5.opt
-```
-
-A compatible guest runtime and CUDA application are then required for
-Full-System execution.
-
----
-
-## Generic Gem5Balar integration
-
-To use Gem5Balar in another gem5 platform, the minimum software stack is:
-
-```text
-gem5
-GPGPU-Sim
-Gem5Balar sources
-GPGPU-Sim integration patch
-compatible CUDA/Balar guest runtime
-```
-
-The target gem5 platform must provide:
-
-```text
-Gem5Balar
-├── PIO
-├── control DMA
-├── gpu_mem RequestPort
-└── GPU clock/event driving
-```
-
-The target memory hierarchy does not need to be CHI.
-
----
-
-## Reference experiment
-
-To reproduce the configuration used in this project, additionally use:
-
-```text
-gem5-infra
-RISC-V Full-System Linux
-RISC-V CNM board
-Ruby / CHI
-reference scripts and configuration
-```
-
-The current reference memory topology is:
-
-```text
-Gem5Balar.dma
-      |
-      v
-CNM_RNI_DMA #0
-      |
-      v
-RubySequencer #0
-      |
-      v
-CHI
-
-
-Gem5Balar.gpu_mem
-      |
-      v
-CNM_RNI_DMA #1
-      |
-      v
-RubySequencer #1
-      |
-      v
-CHI
-```
-
----
-
-## Recommended source layout
-
-```text
-workspace/
-├── gem5/
-├── gpgpu-sim/
-├── gem5-infra/
-└── gem5-balar-integration/
-```
-
-The roles of these repositories are:
-
-```text
-gem5
-    CPU, system and memory hierarchy simulator
-
-gpgpu-sim
-    GPU execution simulator
-
-gem5-infra
-    Full-System reference infrastructure
-
-gem5-balar-integration
-    Gem5Balar sources, patches, scripts,
-    configuration and documentation
-```
-
-`gem5-balar-integration` is therefore the integration layer, not a
-complete distribution of the CPU and GPU simulators.
-
-<!-- END GEM5BALAR DEPENDENCIES -->
-
-# 4. Integrating Gem5Balar into another gem5 system
-
-A new gem5 integration needs to provide at least:
-
-```text
-1. Gem5Balar SimObject
-2. CPU-visible PIO connection
-3. control DMA connection
-4. gpu_mem timing connection
-5. GPGPU-Sim library
-6. GPU clock/event driving
-7. compatible CUDA/Balar guest runtime
-```
-
-The exact memory topology is not fixed by Gem5Balar.
-
-For example, an implementation could use:
-
-```text
-one shared gpu_mem requester
-```
-
-or:
-
-```text
-multiple GPU requesters
-```
-
-or potentially:
-
-```text
-one requester per GPU cluster
-```
-
-depending on the target gem5 memory architecture.
-
-The current reference integration uses a single shared `gpu_mem` RequestPort.
-
----
-
-# 5. Reference integration used in this project
-
-The development configuration uses:
-
-```text
-gem5 Full-System
-        +
-RISC-V Linux guest
-        +
-RISC-V CNM board
-        +
-Ruby / CHI memory hierarchy
-        +
-Gem5Balar
-        +
-GPGPU-Sim
-```
-
-The relevant memory topology is currently:
-
-```text
-Gem5Balar.dma
-      │
-      ▼
-CNM_RNI_DMA #0
-      │
-      ▼
-RubySequencer #0
-      │
-      ▼
-CHI
-
-
-Gem5Balar.gpu_mem
-      │
-      ▼
-CNM_RNI_DMA #1
-      │
-      ▼
-RubySequencer #1
-      │
-      ▼
-CHI
-```
-
-This separates:
-
-```text
-control DMA traffic
-```
-
-from:
-
-```text
-GPU mem_fetch timing traffic
-```
-
----
-
-# 6. GPU execution model
-
-GPGPU-Sim remains responsible for GPU execution.
-
-Gem5Balar periodically advances the GPU simulator using the gem5 event queue.
-
-Conceptually:
-
-```text
-gem5 EventQueue
-      │
-      ▼
-GPU clock event
-      │
-      ▼
-SST_gpu_core_cycle()
-      │
-      ▼
-GPGPU-Sim
-```
-
-The current reference configuration uses:
-
-```text
-gpu_clock_period = 1 ns
-```
-
-This value is part of the current experimental setup and should not be considered a universal GPU clock configuration.
-
----
-
-# 7. GPU memory model
-
-The current integration separates:
-
-```text
-functional GPU memory
-```
-
-from:
-
-```text
-gem5 timing traffic
-```
-
-GPGPU-Sim remains the functional owner of GPU memory.
-
-Gem5Balar generates gem5 transactions so that GPU memory requests experience the timing behavior of the gem5 memory hierarchy.
-
-Therefore, at the current milestone:
-
-```text
-GPGPU-Sim
-    └── functional GPU memory semantics
-
-gem5
-    └── memory-system timing
-```
-
-This is an important design choice and may evolve in future versions.
-
----
-
-# 8. mem_fetch flow
-
-A GPU request currently follows this path:
-
-```text
-GPGPU-Sim cluster
-       │
-       ▼
-    mem_fetch
-       │
-       ▼
-send_read_request_SST()
-or
-send_write_request_SST()
-       │
-       ▼
-Gem5Balar::sendGpuMemRead/Write()
-       │
-       ▼
-enqueueGpuMemRequest()
-       │
-       ▼
-split request if necessary
-       │
-       ▼
-gpu_mem RequestPort
-       │
-       ▼
-CNM RNI
-       │
-       ▼
-CHI
-       │
-       ▼
-timing response
-       │
-       ▼
-GpuMemPort::recvTimingResp()
-       │
-       ▼
-Gem5Balar::recvGpuMemTimingResp()
-       │
-       ▼
-SST_receive_mem_reply()
-       │
-       ▼
-GPGPU-Sim
-```
-
-Requests crossing cache-line boundaries are split into multiple gem5 packets.
-
-Gem5Balar tracks all parts belonging to the same GPGPU-Sim `mem_fetch`.
-
-GPGPU-Sim is notified only after every part of the original request has completed.
-
----
-
-# 9. Address mapping
-
-GPGPU-Sim GPU addresses are not necessarily valid guest physical addresses.
-
-Directly injecting raw GPU addresses into the current gem5/Ruby memory hierarchy caused invalid address routing.
-
-The current implementation therefore maps GPU timing requests into a dedicated guest-physical aperture.
-
-Reference configuration:
-
-```text
-base = 0x100000000
-size = 0x40000000
-```
-
-Mapping:
-
-```text
-mapped_address =
-    gpu_timing_base +
-    (gpu_address & (gpu_timing_size - 1))
-```
-
-For example:
-
-```text
-GPU address:
-0x1f8941e0
-
-Timing address:
-0x11f8941e0
-```
-
-The original GPU address is still retained by the transaction metadata.
-
-This mapping is currently a **timing-model mechanism**, not a final GPU virtual/physical memory architecture.
-
----
-
-# 10. Partial cache-line requests
-
-GPU `mem_fetch` requests may be smaller than a gem5 cache line.
-
-For the current CHI implementation, partial ordinary load requests reached a controller path requiring a complete cache-line data block.
-
-The current integration therefore marks these timing requests as:
-
-```cpp
-Request::READ_ONCE
-```
-
-which selects the `LoadReadOnce` path in the specific gem5 CHI implementation used by this project.
-
-This decision is specific to the current controller behavior and should not be interpreted as a general CHI requirement.
-
----
-
-# 11. Write timing
-
-At the current development milestone, GPU writes are represented in gem5 as timing reads:
-
-```text
-GPGPU WRITE
-      │
-      ▼
-TIMING READ in gem5
-```
-
-GPGPU-Sim continues to provide the functional memory semantics.
-
-This avoids modifying guest physical memory while the GPU memory ownership model is still being developed.
-
-A future implementation may introduce:
-
-```text
-reserved GPU physical memory
-translated GPU memory
-shadow GPU memory
-or a dedicated GPU memory controller
-```
-
-to support true gem5-side write semantics.
-
----
-
-# 12. Backpressure
-
-The original SST Balar architecture provided a memory interface for each GPU cluster.
-
-Conceptually:
-
-```text
-cluster 0 -> gpu_to_cache_links[0]
-cluster 1 -> gpu_to_cache_links[1]
-...
-cluster N -> gpu_to_cache_links[N]
-```
-
-The current Gem5Balar reference implementation instead multiplexes GPU clusters into a single shared:
-
-```text
-gpu_mem RequestPort
-```
-
-This creates different backpressure requirements.
-
-Per-cluster outstanding request tracking is preserved, while aggregate pressure on the shared gem5 port is currently under evaluation.
-
-This is an active M3.7 design area.
-
-Possible future designs include:
-
-```text
-single shared requester
-multiple requesters shared by groups of clusters
-one requester per GPU cluster
-GPU-specific Ruby requester/coalescer
-```
-
----
-
-# 13. Repository structure
-
-```text
-gem5-balar-integration/
-├── README.md
-│
-├── src/
-│   └── gem5/
-│       └── dev/
-│           └── balar/
-│               ├── Gem5Balar.py
-│               ├── gem5_balar.hh
-│               ├── gem5_balar.cc
-│               └── balar_gpu_api.hh
-│
-├── patches/
-│   ├── gem5-infra/
-│   ├── gpgpu-sim/
-│   └── sst-elements/
-│
-├── configs/
-│   └── gpgpusim.config
-│
-├── scripts/
-│   ├── env_balar.sh
-│   ├── m37_build.slurm
-│   └── m37_vecadd.slurm
-│
-├── tests/
-│   └── vecadd/
-│
-├── docs/
-│   ├── architecture/
-│   ├── adr/
-│   └── milestones/
-│
-└── evidence/
-    └── versions.txt
-```
-
-The repository does **not** contain complete copies of gem5, GPGPU-Sim or gem5-infra.
-
-Instead, it stores:
-
-```text
-Gem5Balar sources
-configuration
-integration patches
-scripts
-documentation
-validation evidence
-```
-
----
-
-# 14. Reference environment
-
-The current development setup uses:
-
-```text
-gem5
-GPGPU-Sim
-gem5-infra
-RISC-V Full-System Linux
-Ruby / CHI
-Slurm
-```
-
-The versions and commits used for validated experiments should be recorded in:
+The exact external revisions used by the validated baseline are recorded in:
 
 ```text
 evidence/versions.txt
 ```
 
-This file should be treated as the authoritative reference for reproducing a specific experiment.
+Those revisions should be considered part of the reproducible configuration.
 
----
+### Validated build environment
 
-# 15. Building the reference integration
+The current portable baseline has been validated with the following environment:
 
-The reference environment expects:
+| Component | Validated version / configuration |
+|---|---|
+| gem5 | DEVELOP-FOR-25.1 baseline |
+| Python | 3.12.9 |
+| SCons | 4.0.1 |
+| GCC | 11.5.0 |
+| G++ | 11.5.0 |
+| BSC Miniforge module | 24.11.3-2 |
+| GPGPU-Sim CUDA configuration | CUDA 11.8 (`cuda-11080`) |
+| gem5 build | `build/BSC/gem5.opt` |
+| Host architecture used at BSC | AArch64 compute nodes |
 
-```text
-WORK=/gpfs/scratch/bsc18/$USER/gem5-balar
-
-$WORK/gem5
-$WORK/gpgpu-sim
-$WORK/gem5-balar-integration
-```
-
-Gem5Balar is compiled as part of gem5.
-
-The provided reference build script is:
-
-```bash
-sbatch scripts/m37_build.slurm
-```
-
-During development, incremental builds are preferred after modifying Gem5Balar.
-
-Typical targets are:
+On BSC, the validated gem5 build environment is initialized with:
 
 ```bash
-scons --no-compress-debug -j2 \
-    build/BSC/dev/balar/gem5_balar.o
+module purge
+module load miniforge/24.11.3-2
 
-scons --no-compress-debug -j2 \
-    build/BSC/gem5.opt
+export PYTHONNOUSERSITE=1
+export CC=/usr/bin/gcc
+export CXX=/usr/bin/g++
+export SCONS_BIN=/apps/MINIFORGE/24.11.3-2/bin/scons
 ```
 
-A full clean rebuild should not normally be necessary for Gem5Balar source changes.
-
----
-
-# 16. Running the reference vecadd experiment
-
-The reference integration uses a CUDA vector-add application running inside the RISC-V guest.
-
-The experiment can be launched with:
-
-```bash
-sbatch scripts/m37_vecadd.slurm
-```
-
-The application exercises:
+This environment is reproduced by:
 
 ```text
-CUDA registration
-H2D transfer
-kernel launch
-GPU execution
-GPU mem_fetch generation
-D2H transfer
+scripts/build_gem5_compute.slurm
 ```
 
-The test is intended as an end-to-end integration test rather than a GPU performance benchmark.
-
----
-
-# 17. Validation markers
-
-Useful Gem5Balar runtime markers include:
+The successful portable build generated:
 
 ```text
-[BALAR-API]
-[BALAR-DMA]
-[BALAR-GPU-CLOCK]
-[BALAR-GPU-MEM]
+build/BSC/dev/balar/gem5_balar.o
+build/BSC/gem5.opt
 ```
 
-For the GPU memory path, the intended round trip is:
+and the resulting binary exported:
 
 ```text
-FETCH ISSUE
-      │
-      ▼
-PACKET ACCEPT
-      │
-      ▼
-gem5 / CHI
-      │
-      ▼
-FETCH COMPLETE
-      │
-      ▼
-GPGPU REPLY
+is_SST_buffer_full(...)
+send_read_request_SST(...)
+send_write_request_SST(...)
 ```
 
-These markers make it possible to identify whether a request:
+### Required external repositories
 
-```text
-was produced by GPGPU-Sim
-was accepted by gem5
-returned through the memory hierarchy
-was delivered back to GPGPU-Sim
-```
-
----
-
-# 18. Current status
-
-## M3.6 — CUDA control path
-
-Validated.
-
-The following path has been demonstrated with a real CUDA `vecadd` workload:
-
-```text
-guest CUDA application
-        │
-        ▼
-Gem5Balar
-        │
-        ▼
-GPGPU-Sim
-        │
-        ▼
-CUDA kernel registration / launch
-```
-
-The control-side DMA and callback infrastructure is operational.
-
----
-
-## M3.7 — GPU memory timing path
-
-In progress.
-
-Implemented:
-
-```text
-GPGPU-Sim mem_fetch hooks
-dedicated Gem5Balar gpu_mem RequestPort
-separate CHI requester
-cache-line splitting
-transaction aggregation
-timing responses
-gem5 RequestPort retry handling
-GPU timing address aperture
-partial-request READ_ONCE handling
-```
-
-Currently under validation:
-
-```text
-shared-port backpressure
-complete mem_fetch response round trip
-sustained memory traffic behavior
-fairness between GPU clusters
-```
-
-M3.7 should not be considered complete until the full response path:
-
-```text
-GPGPU-Sim
-    -> Gem5Balar
-    -> gem5 / CHI
-    -> Gem5Balar
-    -> GPGPU-Sim
-```
-
-has been demonstrated reliably.
-
----
-
-# 19. Known limitations
-
-The current implementation contains several experimental design choices:
-
-- one shared `gpu_mem` RequestPort for all GPU clusters;
-- timing-address remapping into a guest-physical aperture;
-- GPU writes represented as timing reads;
-- GPGPU-Sim remains the functional owner of GPU memory;
-- GPU clock period is currently configured explicitly by Gem5Balar;
-- the reference CNM integration currently requires board-side modifications;
-- backpressure behavior for the shared requester is still being validated.
-
-These should be treated as explicit design points rather than hidden implementation details.
-
----
-
-# 20. Future work
-
-Possible next steps include:
-
-```text
-complete M3.7 round-trip validation
-evaluate global versus per-cluster backpressure
-measure RequestPort/RNI contention
-introduce fair scheduling between GPU clusters
-evaluate multiple gpu_mem requesters
-replace temporary board modifications with a formal integration API
-define a proper GPU physical-address model
-implement real timing writes
-validate additional CUDA workloads
-collect timing and contention statistics
-```
-
----
-
-# 21. Project goal
-
-The long-term objective is to provide an integration where:
+Before using this integration repository, the following repositories must already exist:
 
 ```text
 gem5
-    models CPU, system and memory hierarchy timing
-
 GPGPU-Sim / Accel-Sim
-    models GPU execution
-
-Gem5Balar
-    bridges both simulators
+SST Elements
+gem5-infra
 ```
 
-while preserving enough compatibility with the previous SST/Balar interface to reuse the existing CUDA/GPGPU-Sim software stack with minimal changes.
+Their paths are configured through:
+
+```text
+configs/local.env
+```
+
+For example:
+
+```bash
+GEM5_DIR=/path/to/gem5
+GPGPUSIM_ROOT=/path/to/gpgpu-sim
+SST_ELEMENTS_DIR=/path/to/sst-elements
+GEM5_INFRA_DIR=/path/to/gem5-infra
+```
+
+The exact source revisions expected by the integration are stored in:
+
+```text
+evidence/versions.txt
+```
+
+`scripts/apply.sh` checks these revisions before installing the integration.
+
+A revision mismatch is therefore treated separately from a build failure.
+
+## What the scripts actually do
+
+### `scripts/setup_env.sh`
+
+Does **not** install dependencies.
+
+It reads the local configuration and exports the paths and environment variables required by the existing installations.
+
+### `scripts/apply.sh`
+
+Does **not** clone external repositories.
+
+It assumes the external repositories already exist.
+
+It then:
+
+1. checks their revisions;
+2. copies canonical BALAR files from `src/`;
+3. applies the patches stored under `patches/`;
+4. detects patches that are already applied;
+5. installs workload/runtime files into the corresponding external trees.
+
+Conceptually:
+
+```text
+existing external repositories
+        +
+gem5-balar-integration/src
+        +
+gem5-balar-integration/patches
+        |
+        v
+configured BALAR development trees
+```
+
+### `scripts/build.sh`
+
+Does **not** install compilers or build dependencies.
+
+It dispatches to:
+
+```text
+scripts/build_gpgpu.sh
+scripts/build_gem5.sh
+scripts/build_vecadd.sh
+```
+
+and builds the corresponding component using the already configured development environment.
+
+## Reproduction model
+
+A fresh setup therefore consists of two different stages.
+
+### 1. External environment preparation
+
+This part is currently **not automated by this repository**.
+
+The user must provide:
+
+```text
+compatible gem5 source tree
+compatible GPGPU-Sim source tree
+compatible SST Elements source tree
+compatible gem5-infra source tree
+required Python/SCons/compiler environment
+RISC-V toolchain required by the guest workload
+required images/checkpoints
+```
+
+The versions and revisions used by the reference environment are documented under `evidence/`.
+
+### 2. BALAR integration
+
+Once those dependencies exist:
+
+```bash
+cp configs/local.env.example configs/local.env
+# Edit the paths.
+
+source scripts/setup_env.sh
+
+./scripts/apply.sh
+```
+
+Then the individual components can be built.
+
+On BSC:
+
+```bash
+./scripts/build.sh gpgpu
+sbatch scripts/build_gem5_compute.slurm
+```
+
+The vecadd binaries are built with the appropriate RISC-V cross-build environment:
+
+```bash
+./scripts/build.sh vecadd
+```
+
+After the benchmark disk and checkpoint are available:
+
+```bash
+./scripts/stage_vecadd_benchdisk.sh
+./scripts/generate_vecadd.sh
+./scripts/run_vecadd.sh
+```
+
+Therefore, this repository should be understood as a **portable integration layer**, not as a complete dependency installer.
+
+## Local configuration
+
+Create the machine-specific configuration:
+
+```bash
+cp configs/local.env.example configs/local.env
+```
+
+Edit `configs/local.env` and configure the paths to the external repositories.
+
+For example:
+
+```text
+GEM5_DIR=...
+GPGPUSIM_ROOT=...
+SST_ELEMENTS_DIR=...
+GEM5_INFRA_DIR=...
+```
+
+`configs/local.env` is intentionally ignored by Git.
+
+## Environment
+
+Load the integration environment with:
+
+```bash
+source scripts/setup_env.sh
+```
+
+## Applying the integration
+
+Install the BALAR modifications into the external source trees with:
+
+```bash
+./scripts/apply.sh
+```
+
+The script:
+
+1. checks the expected repository revisions;
+2. copies the canonical files from `src/`;
+3. applies the required patches;
+4. detects patches that are already applied;
+5. installs the BALAR runtime and workload files.
+
+## Building
+
+The main build interface is:
+
+```bash
+./scripts/build.sh <target>
+```
+
+Available targets are:
+
+```text
+gpgpu
+gem5
+vecadd
+```
+
+### GPGPU-Sim
+
+```bash
+./scripts/build.sh gpgpu
+```
+
+### gem5
+
+```bash
+./scripts/build.sh gem5
+```
+
+On BSC, gem5 is built on a compute node using:
+
+```bash
+sbatch scripts/build_gem5_compute.slurm
+```
+
+The validated build produces:
+
+```text
+build/BSC/dev/balar/gem5_balar.o
+build/BSC/gem5.opt
+```
+
+and exports the BALAR GPU-memory hooks:
+
+```text
+is_SST_buffer_full(...)
+send_read_request_SST(...)
+send_write_request_SST(...)
+```
+
+### vecadd
+
+```bash
+./scripts/build.sh vecadd
+```
+
+The build creates separate host and guest binaries:
+
+```text
+build/vecadd/host/vecadd-ubuntu
+build/vecadd/guest/vecadd-ubuntu
+```
+
+Their roles are documented in:
+
+```text
+evidence/vecadd-binary-roles.txt
+```
+
+## Running vecadd
+
+The basic workflow is:
+
+```bash
+./scripts/stage_vecadd_benchdisk.sh
+./scripts/generate_vecadd.sh
+./scripts/run_vecadd.sh
+```
+
+A portable checkpoint can be created using:
+
+```text
+scripts/create_balar_portable_checkpoint.slurm
+```
+
+Generated disk images, checkpoints, simulation outputs and large binaries are intentionally not stored in Git.
+
+## Current architecture
+
+The current GPU-memory path is approximately:
+
+```text
+CUDA application
+      |
+      v
+BALAR Linux runtime
+      |
+      v
+Gem5Balar
+      |
+      v
+GPGPU-Sim
+      |
+      | mem_fetch
+      v
+BALAR compatibility API
+      |
+      v
+Gem5Balar GPU memory port
+      |
+      | sendTimingReq()
+      v
+gem5 timing memory system
+```
+
+The current implementation includes:
+
+- CUDA/BALAR control calls
+- GPGPU-Sim callbacks
+- `mem_fetch` forwarding
+- gem5 `RequestPort` integration
+- `sendTimingReq()`
+- `recvTimingResp()`
+- `recvReqRetry()`
+- outstanding transaction tracking
+- backpressure handling
+
+A real `vecadd` execution has exercised the complete control path and GPU-memory timing path.
+
+## Architectural status
+
+This implementation is an **experimental functional baseline**.
+
+It was developed to prove that GPGPU-Sim memory traffic could enter the gem5 timing memory system and experience real timing and backpressure.
+
+Several aspects are expected to change in future architecture work, including:
+
+- the current shared GPU memory interface;
+- read/write semantics;
+- address translation;
+- outstanding-request limits;
+- DMA versus ordinary GPU-memory traffic;
+- parts of the SST compatibility layer.
+
+In particular, the current experimental path may represent GPU writes as:
+
+```text
+WRITE -> TIMING_READ
+```
+
+This is useful for timing-path validation but is not intended to represent the final memory semantics.
+
+The current implementation should therefore remain available as a reproducible reference while future architecture work is developed separately.
+
+## Reproducing the baseline
+
+Typical workflow:
+
+```bash
+git clone <repository>
+cd gem5-balar-integration
+
+cp configs/local.env.example configs/local.env
+# Edit configs/local.env
+
+source scripts/setup_env.sh
+
+./scripts/apply.sh
+
+./scripts/build.sh gpgpu
+./scripts/build.sh gem5
+./scripts/build.sh vecadd
+
+./scripts/stage_vecadd_benchdisk.sh
+./scripts/generate_vecadd.sh
+./scripts/run_vecadd.sh
+```
+
+On BSC, use the supplied Slurm scripts for operations requiring compute nodes.
+
+## Validated portable baseline
+
+The portable integration was established in:
+
+```text
+2a9f670 build: make BALAR gem5 integration portable
+```
+
+Future architectural development should be performed separately so this baseline remains available for comparison and regression testing.
